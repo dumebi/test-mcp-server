@@ -5,22 +5,30 @@
     "private": true,
     "type": "module",
     "bin": {
-      "testmcp-server": "./build/index.js"
+        "test-mcp-server": "./build/server/index.js"
     },
     "files": [
-      "build"
+        "build"
     ],
     "scripts": {
-      "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
-      "prepare": "npm run build",
-      "watch": "tsc --watch",
-      "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+        "git": "func() { git add . && git commit -m \"$1\" && git push origin HEAD; }; func",
+        "build": "tsc && chmod 755 build/index.js && chmod 755 build/server/index.js",
+        "start": "node build/index.js",
+        "prepare": "npm run build",
+        "watch": "tsc --watch",
+        "inspector": "npx @modelcontextprotocol/inspector build/server/index.js"
     },
     "dependencies": {
-      "@modelcontextprotocol/sdk": "0.6.0"
+        "@anthropic-ai/sdk": "^0.39.0",
+        "@modelcontextprotocol/sdk": "^0.6.0",
+        "@types/cors": "^2.8.17",
+        "@types/express": "^5.0.1",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^5.1.0"
     },
     "devDependencies": {
-      "@types/node": "^20.11.24",
-      "typescript": "^5.3.3"
+        "@types/node": "^20.11.24",
+        "typescript": "^5.3.3"
     }
-  }
+}
