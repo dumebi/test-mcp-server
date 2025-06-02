@@ -3,7 +3,7 @@
       "test-mcp-server": {
         "command": "node",
         "args": [
-          "/Applications/Node/mcp-server/build/index.js"
+          "/Applications/Node/mcp-server/build/server/index.js"
         ]
       }
     }
