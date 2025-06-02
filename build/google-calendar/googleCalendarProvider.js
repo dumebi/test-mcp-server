@@ -76,24 +76,6 @@ export class GoogleCalendarProvider {
         console.error('Refresh token:', tokens.refresh_token);
         console.error('Add this refresh token to your .env file as GOOGLE_REFRESH_TOKEN');
     }
-    // const postMessageTool: Tool = {
-    //   name: "slack_post_message",
-    //   description: "Post a new message to a Slack channel",
-    //   inputSchema: {
-    //     type: "object",
-    //     properties: {
-    //       channel_id: {
-    //         type: "string",
-    //         description: "The ID of the channel to post to",
-    //       },
-    //       text: {
-    //         type: "string",
-    //         description: "The message text to post",
-    //       },
-    //     },
-    //     required: ["channel_id", "text"],
-    //   },
-    // };
     /**
      * Get the tool definitions
      */
@@ -102,7 +84,20 @@ export class GoogleCalendarProvider {
             {
                 name: 'list_calendars',
                 description: 'List all available calendars',
-                inputSchema: {},
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        limit: {
+                            type: "number",
+                            description: "Maximum number of channels to return (default 100, max 200)",
+                            default: 100,
+                        },
+                        cursor: {
+                            type: "string",
+                            description: "Pagination cursor for next page of results",
+                        },
+                    },
+                },
             },
             {
                 name: 'list_events',
@@ -348,46 +343,48 @@ export class GoogleCalendarProvider {
             },
         ];
     }
-    /**
-     * Handle MCP tool request
-     */
-    async handleRequest(requestContext, tools) {
-        const { name, parameters } = requestContext.request;
-        try {
-            switch (name) {
-                case 'list_calendars':
-                    return this.listCalendars();
-                case 'list_events':
-                    return this.listEvents(parameters);
-                case 'create_event':
-                    return this.createEvent(parameters);
-                case 'get_event':
-                    return this.getEvent(parameters);
-                case 'update_event':
-                    return this.updateEvent(parameters);
-                case 'delete_event':
-                    return this.deleteEvent(parameters);
-                case 'find_available_slots':
-                    return this.findAvailableSlots(parameters);
-                case 'set_auth_code':
-                    await this.setAuthCode(parameters.code);
-                    return { value: { success: true, message: 'Authorization successful' } };
-                case 'get_upcoming_meetings':
-                    return this.getUpcomingMeetings(parameters);
-                default:
-                    throw new Error(`Unknown tool: ${name}`);
-            }
-        }
-        catch (error) {
-            console.error(`Error handling request for tool ${name}:`, error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'INTERNAL_ERROR',
-                },
-            };
-        }
-    }
+    // /**
+    //  * Handle MCP tool request
+    //  */
+    // async handleRequest(
+    //   requestContext: RequestContext,
+    //   tools: Tools,
+    // ): Promise<ToolResponse> {
+    //   const { name, parameters } = requestContext.request;
+    //   try {
+    //     switch (name) {
+    //       case 'list_calendars':
+    //         return this.listCalendars();
+    //       case 'list_events':
+    //         return this.listEvents(parameters);
+    //       case 'create_event':
+    //         return this.createEvent(parameters);
+    //       case 'get_event':
+    //         return this.getEvent(parameters);
+    //       case 'update_event':
+    //         return this.updateEvent(parameters);
+    //       case 'delete_event':
+    //         return this.deleteEvent(parameters);
+    //       case 'find_available_slots':
+    //         return this.findAvailableSlots(parameters);
+    //       case 'set_auth_code':
+    //         await this.setAuthCode(parameters.code);
+    //         return { value: { success: true, message: 'Authorization successful' } };
+    //       case 'get_upcoming_meetings':
+    //         return this.getUpcomingMeetings(parameters);
+    //       default:
+    //         throw new Error(`Unknown tool: ${name}`);
+    //     }
+    //   } catch (error) {
+    //     console.error(`Error handling request for tool ${name}:`, error);
+    //     return {
+    //       error: {
+    //         message: error instanceof Error ? error.message : String(error),
+    //         code: 'INTERNAL_ERROR',
+    //       },
+    //     };
+    //   }
+    // }
     /**
      * List all available calendars
      */

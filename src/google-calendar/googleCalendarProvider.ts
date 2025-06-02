@@ -377,58 +377,58 @@ export class GoogleCalendarProvider {
     ];
   }
 
-  /**
-   * Handle MCP tool request
-   */
-  async handleRequest(
-    requestContext: RequestContext,
-    tools: Tools,
-  ): Promise<ToolResponse> {
-    const { name, parameters } = requestContext.request;
+  // /**
+  //  * Handle MCP tool request
+  //  */
+  // async handleRequest(
+  //   requestContext: RequestContext,
+  //   tools: Tools,
+  // ): Promise<ToolResponse> {
+  //   const { name, parameters } = requestContext.request;
 
-    try {
-      switch (name) {
-        case 'list_calendars':
-          return this.listCalendars();
+  //   try {
+  //     switch (name) {
+  //       case 'list_calendars':
+  //         return this.listCalendars();
 
-        case 'list_events':
-          return this.listEvents(parameters);
+  //       case 'list_events':
+  //         return this.listEvents(parameters);
 
-        case 'create_event':
-          return this.createEvent(parameters);
+  //       case 'create_event':
+  //         return this.createEvent(parameters);
 
-        case 'get_event':
-          return this.getEvent(parameters);
+  //       case 'get_event':
+  //         return this.getEvent(parameters);
 
-        case 'update_event':
-          return this.updateEvent(parameters);
+  //       case 'update_event':
+  //         return this.updateEvent(parameters);
 
-        case 'delete_event':
-          return this.deleteEvent(parameters);
+  //       case 'delete_event':
+  //         return this.deleteEvent(parameters);
 
-        case 'find_available_slots':
-          return this.findAvailableSlots(parameters);
+  //       case 'find_available_slots':
+  //         return this.findAvailableSlots(parameters);
 
-        case 'set_auth_code':
-          await this.setAuthCode(parameters.code);
-          return { value: { success: true, message: 'Authorization successful' } };
+  //       case 'set_auth_code':
+  //         await this.setAuthCode(parameters.code);
+  //         return { value: { success: true, message: 'Authorization successful' } };
 
-        case 'get_upcoming_meetings':
-          return this.getUpcomingMeetings(parameters);
+  //       case 'get_upcoming_meetings':
+  //         return this.getUpcomingMeetings(parameters);
 
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
-    } catch (error) {
-      console.error(`Error handling request for tool ${name}:`, error);
-      return {
-        error: {
-          message: error instanceof Error ? error.message : String(error),
-          code: 'INTERNAL_ERROR',
-        },
-      };
-    }
-  }
+  //       default:
+  //         throw new Error(`Unknown tool: ${name}`);
+  //     }
+  //   } catch (error) {
+  //     console.error(`Error handling request for tool ${name}:`, error);
+  //     return {
+  //       error: {
+  //         message: error instanceof Error ? error.message : String(error),
+  //         code: 'INTERNAL_ERROR',
+  //       },
+  //     };
+  //   }
+  // }
 
   /**
    * List all available calendars
