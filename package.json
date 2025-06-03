@@ -14,7 +14,7 @@
         "git": "func() { git add . && git commit -m \"$1\" && git push origin HEAD; }; func",
         "build": "tsc && chmod 755 build/index.js ",
         "start:server": "node build/index.js",
-        "start:client": "node build/index.js",
+        "start:client": "node build/client/index.js",
         "prepare": "npm run build",
         "watch": "tsc --watch",
         "inspector": "npx @modelcontextprotocol/inspector build/index.js"
