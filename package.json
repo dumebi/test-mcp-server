@@ -5,18 +5,18 @@
     "private": true,
     "type": "module",
     "bin": {
-        "test-mcp-server": "./build/server/index.js"
+        "test-mcp-server": "./build/index.js"
     },
     "files": [
         "build"
     ],
     "scripts": {
         "git": "func() { git add . && git commit -m \"$1\" && git push origin HEAD; }; func",
-        "build": "tsc && chmod 755 build/index.js && chmod 755 build/server/index.js",
+        "build": "tsc && chmod 755 build/index.js ",
         "start": "node build/index.js",
         "prepare": "npm run build",
         "watch": "tsc --watch",
-        "inspector": "npx @modelcontextprotocol/inspector build/server/index.js"
+        "inspector": "npx @modelcontextprotocol/inspector build/index.js"
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.39.0",

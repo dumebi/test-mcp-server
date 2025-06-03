@@ -13,31 +13,28 @@ export class GoogleCalendarProvider {
             // Set up OAuth2 client
             this.auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
             // Set credentials if they exist
-            if (process.env.GOOGLE_REFRESH_TOKEN) {
-                try {
-                    this.auth.setCredentials({
-                        refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-                    });
-                    // Initialize the calendar client
-                    this.calendar = google.calendar({ version: 'v3', auth: this.auth });
-                    // Test the connection
-                    await this.calendar.calendarList.list();
-                    console.error('Successfully authenticated with Google Calendar API');
-                }
-                catch (error) {
-                    console.error('Error authenticating with refresh token:', error);
-                    this.calendar = null;
-                    this.auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-                    // Show auth URL since refresh token is invalid
-                    console.error('\n⚠️ Invalid refresh token. Please re-authorize the application.');
-                    this.showAuthUrl();
-                }
-            }
-            else {
-                // If no refresh token, prepare for authorization
-                console.error('\n⚠️ No refresh token found. Please authorize the application.');
-                this.showAuthUrl();
-            }
+            // if (process.env.GOOGLE_REFRESH_TOKEN) {
+            //   try {
+            //     // Test the connection
+            //     await this.calendar.calendarList.list();
+            //     console.error('Successfully authenticated with Google Calendar API');
+            //   } catch (error) {
+            //     console.error('Error authenticating with refresh token:', error);
+            //     this.calendar = null;
+            //     this.auth = new google.auth.OAuth2(
+            //       process.env.GOOGLE_CLIENT_ID,
+            //       process.env.GOOGLE_CLIENT_SECRET,
+            //       process.env.GOOGLE_REDIRECT_URI
+            //     );
+            //     // Show auth URL since refresh token is invalid
+            //     console.error('\n⚠️ Invalid refresh token. Please re-authorize the application.');
+            //     this.showAuthUrl();
+            //   }
+            // } else {
+            //   // If no refresh token, prepare for authorization
+            //   console.error('\n⚠️ No refresh token found. Please authorize the application.');
+            //   this.showAuthUrl();
+            // }
         }
         catch (error) {
             console.error('Error initializing Google Calendar client:', error);
@@ -343,55 +340,18 @@ export class GoogleCalendarProvider {
             },
         ];
     }
-    // /**
-    //  * Handle MCP tool request
-    //  */
-    // async handleRequest(
-    //   requestContext: RequestContext,
-    //   tools: Tools,
-    // ): Promise<ToolResponse> {
-    //   const { name, parameters } = requestContext.request;
-    //   try {
-    //     switch (name) {
-    //       case 'list_calendars':
-    //         return this.listCalendars();
-    //       case 'list_events':
-    //         return this.listEvents(parameters);
-    //       case 'create_event':
-    //         return this.createEvent(parameters);
-    //       case 'get_event':
-    //         return this.getEvent(parameters);
-    //       case 'update_event':
-    //         return this.updateEvent(parameters);
-    //       case 'delete_event':
-    //         return this.deleteEvent(parameters);
-    //       case 'find_available_slots':
-    //         return this.findAvailableSlots(parameters);
-    //       case 'set_auth_code':
-    //         await this.setAuthCode(parameters.code);
-    //         return { value: { success: true, message: 'Authorization successful' } };
-    //       case 'get_upcoming_meetings':
-    //         return this.getUpcomingMeetings(parameters);
-    //       default:
-    //         throw new Error(`Unknown tool: ${name}`);
-    //     }
-    //   } catch (error) {
-    //     console.error(`Error handling request for tool ${name}:`, error);
-    //     return {
-    //       error: {
-    //         message: error instanceof Error ? error.message : String(error),
-    //         code: 'INTERNAL_ERROR',
-    //       },
-    //     };
-    //   }
-    // }
     /**
      * List all available calendars
      */
-    async listCalendars() {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async listCalendars(refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const response = await this.calendar.calendarList.list();
             return response;
@@ -406,22 +366,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error listing calendars:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * List events in a calendar
      */
-    async listEvents(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async listEvents(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             const timeMin = parameters.timeMin || new Date().toISOString();
@@ -451,22 +410,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error listing events:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Create a new event in a calendar
      */
-    async createEvent(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async createEvent(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             // Prepare event object
@@ -500,7 +458,7 @@ export class GoogleCalendarProvider {
                 requestBody: eventData,
                 sendUpdates: 'all',
             });
-            return response;
+            return response.data;
             //  {
             //     event: {
             //       id: response.data.id,
@@ -517,22 +475,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error creating event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return JSON.stringify(error instanceof Error ? error.message : String(error));
         }
     }
     /**
      * Get details for a specific event
      */
-    async getEvent(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async getEvent(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             const eventId = parameters.eventId;
@@ -548,7 +505,7 @@ export class GoogleCalendarProvider {
                 calendarId,
                 eventId,
             });
-            return response;
+            return JSON.stringify(response);
             //  {
             //     event: {
             //       id: response.data.id,
@@ -567,22 +524,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error getting event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return JSON.stringify(error instanceof Error ? error.message : String(error));
         }
     }
     /**
      * Update an existing event
      */
-    async updateEvent(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async updateEvent(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             const eventId = parameters.eventId;
@@ -650,22 +606,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error updating event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Delete an event from a calendar
      */
-    async deleteEvent(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async deleteEvent(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             const eventId = parameters.eventId;
@@ -689,22 +644,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error deleting event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Find available time slots in a calendar
      */
-    async findAvailableSlots(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async findAvailableSlots(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             const timeMin = parameters.timeMin || new Date().toISOString();
@@ -799,22 +753,21 @@ export class GoogleCalendarProvider {
             // };
         }
         catch (error) {
-            console.error('Error finding available slots:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Get upcoming meetings for today or a specific day
      */
-    async getUpcomingMeetings(parameters) {
-        if (!this.calendar) {
-            return { error: { message: 'Calendar client not initialized', code: 'AUTH_ERROR' } };
+    async getUpcomingMeetings(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the calendar client
+        this.calendar = google.calendar({ version: 'v3', auth: this.auth });
         try {
             const calendarId = 'primary';
             // Default to today
@@ -869,13 +822,7 @@ export class GoogleCalendarProvider {
             };
         }
         catch (error) {
-            console.error('Error getting upcoming meetings:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'CALENDAR_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**

@@ -35,12 +35,7 @@ export interface Request {
 // Tool response interfaces
 export interface ToolResponseValue {}
 
-export interface ToolResponseError {
-  error: {
-    message: string;
-    code: string;
-  };
-}
+export interface ToolResponseError {}
 
 export type ToolResponse = ToolResponseValue | ToolResponseError;
 

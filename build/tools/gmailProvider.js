@@ -13,31 +13,27 @@ export class GmailProvider {
             // Set up OAuth2 client
             this.auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
             // Set credentials if they exist
-            if (process.env.GOOGLE_REFRESH_TOKEN) {
-                try {
-                    this.auth.setCredentials({
-                        refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-                    });
-                    // Initialize the mail client
-                    this.gmail = google.gmail({ version: 'v1', auth: this.auth });
-                    // Test the connection
-                    await this.gmail.users.getProfile();
-                    console.error('Successfully authenticated with Google Mail API');
-                }
-                catch (error) {
-                    console.error('Error authenticating with refresh token:', error);
-                    this.gmail = null;
-                    this.auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-                    // Show auth URL since refresh token is invalid
-                    console.error('\n⚠️ Invalid refresh token. Please re-authorize the application.');
-                    this.showAuthUrl();
-                }
-            }
-            else {
-                // If no refresh token, prepare for authorization
-                console.error('\n⚠️ No refresh token found. Please authorize the application.');
-                this.showAuthUrl();
-            }
+            // if (process.env.GOOGLE_REFRESH_TOKEN) {
+            //   try {
+            //     // If successful, we are authenticated
+            //     console.error('Successfully authenticated with Google Mail API');
+            //   } catch (error) {
+            //     console.error('Error authenticating with refresh token:', error);
+            //     this.gmail = null;
+            //     this.auth = new google.auth.OAuth2(
+            //       process.env.GOOGLE_CLIENT_ID,
+            //       process.env.GOOGLE_CLIENT_SECRET,
+            //       process.env.GOOGLE_REDIRECT_URI
+            //     );
+            //     // Show auth URL since refresh token is invalid
+            //     console.error('\n⚠️ Invalid refresh token. Please re-authorize the application.');
+            //     this.showAuthUrl();
+            //   }
+            // } else {
+            //   // If no refresh token, prepare for authorization
+            //   console.error('\n⚠️ No refresh token found. Please authorize the application.');
+            //   this.showAuthUrl();
+            // }
         }
         catch (error) {
             console.error('Error initializing Google Mail client:', error);
@@ -97,7 +93,7 @@ export class GmailProvider {
                     properties: {
                         to: {
                             type: 'string',
-                            description: 'Recipient email address',
+                            description: 'Recipient email addresses, comma-separated',
                         },
                         subject: {
                             type: 'string',
@@ -140,7 +136,7 @@ export class GmailProvider {
                     properties: {
                         to: {
                             type: 'string',
-                            description: 'Recipient email address',
+                            description: 'Recipient email addresses, comma-separated',
                         },
                         subject: {
                             type: 'string',
@@ -263,32 +259,23 @@ export class GmailProvider {
     /**
      * Send an email using Gmail API
      */
-    async sendEmail(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async sendEmail(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { to, subject, body, attachments, cc, bcc, isHtml = false } = parameters;
-        // let files: string[] = [];
         try {
             const emailLines = [];
-            emailLines.push(`To: ${to.join(", ")}`);
+            emailLines.push(`To: ${to}`);
             if (cc && cc.length)
-                emailLines.push(`Cc: ${cc.join(", ")}`);
+                emailLines.push(`Cc: ${cc}`);
             if (bcc && bcc.length)
-                emailLines.push(`Bcc: ${bcc.join(", ")}`);
-            // if(attachments && attachments.length) {
-            //   emailLines.push(`Content-Type: multipart/mixed; boundary="boundary"`);
-            //   emailLines.push("");
-            //   emailLines.push("--boundary");
-            //   files = attachments.forEach((attachment: string) => {
-            //     let fileContent = readFileSync(resolve(attachment)).toString('base64');
-            //     fileContent = fileContent.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); // Base64 URL-safe encoding
-            //     emailLines.push(`--boundary`);
-            //     emailLines.push(`Content-Type: application/octet-stream; name="${attachment}"`);
-            //     emailLines.push(`Content-Transfer-Encoding: base64`); 
-            //     emailLines.push(`Content-Disposition: attachment; filename="${attachment}"`);
-            //   });
-            // }
+                emailLines.push(`Bcc: ${bcc}`);
             emailLines.push(`Subject: ${subject}`);
             emailLines.push(`Content-Type: ${isHtml ? "text/html" : "text/plain"}; charset=utf-8`);
             emailLines.push("");
@@ -310,19 +297,18 @@ export class GmailProvider {
             return response;
         }
         catch (error) {
-            console.error('Error creating an email:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
-    async draftEmail(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async draftEmail(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { to, subject, body, attachments, cc, bcc, isHtml = false } = parameters;
         // let files: string[] = [];
         try {
@@ -366,22 +352,21 @@ export class GmailProvider {
             return response;
         }
         catch (error) {
-            console.error('Error creating an email:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * List events in a calendar
      */
-    async listEmails(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async listEmails(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { query, maxResults = 100, labelIds } = parameters;
         try {
             const params = {
@@ -446,22 +431,21 @@ export class GmailProvider {
             return formattedResults;
         }
         catch (error) {
-            console.error('Error listing emails:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Get details for a specific event
      */
-    async getEmail(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async getEmail(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { messageId, format = 'full' } = parameters;
         try {
             const response = await this.gmail.users.messages.get({
@@ -524,22 +508,21 @@ export class GmailProvider {
             return result;
         }
         catch (error) {
-            console.error('Error getting event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Update an existing event
      */
-    async deleteEmail(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async deleteEmail(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { messageId, permanently = false } = parameters;
         try {
             if (permanently) {
@@ -552,30 +535,25 @@ export class GmailProvider {
             }
         }
         catch (error) {
-            console.error('Error updating event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**
      * Delete an event from a calendar
      */
-    async modifyLabels(parameters) {
-        if (!this.gmail) {
-            return { error: { message: 'Gmail client not initialized', code: 'AUTH_ERROR' } };
+    async modifyLabels(parameters, refresh_token) {
+        if (!this.auth) {
+            throw new Error('Auth client not initialized');
         }
+        this.auth.setCredentials({
+            refresh_token
+        });
+        // Initialize the mail client
+        this.gmail = google.gmail({ version: 'v1', auth: this.auth });
         const { messageId, addLabelIds = [], removeLabelIds = [] } = parameters;
         try {
             if (!addLabelIds && !removeLabelIds) {
-                return {
-                    error: {
-                        message: `No labels specified to add or remove. Please provide at least one label ID to add or remove.`,
-                    }
-                };
+                return `No labels specified to add or remove. Please provide at least one label ID to add or remove.`;
             }
             await this.gmail.users.messages.modify({
                 userId: "me",
@@ -593,13 +571,7 @@ export class GmailProvider {
             return result;
         }
         catch (error) {
-            console.error('Error deleting event:', error);
-            return {
-                error: {
-                    message: error instanceof Error ? error.message : String(error),
-                    code: 'GMAIL_ERROR',
-                },
-            };
+            return error instanceof Error ? error.message : String(error);
         }
     }
     /**

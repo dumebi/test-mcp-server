@@ -1,197 +1,136 @@
-// Anthropic SDK
-import { Anthropic } from "@anthropic-ai/sdk";
-import {
-    MessageParam,
-    Tool,
-} from "@anthropic-ai/sdk/resources/messages/messages.mjs";
+#!/usr/bin/env node
+import * as dotenv from 'dotenv';
+dotenv.config(); // 로컬 개발 시 .env 파일을 읽습니다.
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { GmailProvider } from './tools/gmailProvider.js';
+import { GoogleCalendarProvider } from './tools/googleCalendarProvider.js';
 
-// MCP Client
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-
-// Express
-import express from "express";
-import type { RequestHandler } from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-
-dotenv.config();
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-if (!ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not set");
+// 디버그 로그
+function debugLog(...args: unknown[]) {
+  console.error('DEBUG:', new Date().toISOString(), ...args);
 }
 
-class MCPClient {
-    private mcp: Client;
-    private llm: Anthropic;
-    private transport: StdioClientTransport | null = null;
-    public tools: Tool[] = [];
+// Server implementation
+const server = new Server({
+  name: "laura-mcp",
+  version: "1.0.0"
+}, {
+  capabilities: {
+    tools: {}
+  }
+});
 
-    constructor() {
-        this.llm = new Anthropic({
-            apiKey: ANTHROPIC_API_KEY,
-        });
-        this.mcp = new Client({
-            name: "mcp-client-cli", version: "1.0.0"
-        }, {
-            capabilities: {
-                tools: {}
-            }
-        })
+debugLog('Server initialized');
 
-    }
+// 환경 변수 확인: MCP 클라이언트 설정이나 .env 파일을 통해 전달받은 값이 여기에
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
-    async connectToServer(serverScriptPath: string) {
-        try {
-            const isJs = serverScriptPath.endsWith(".js");
-            const isPy = serverScriptPath.endsWith(".py");
-            if (!isJs && !isPy) {
-                throw new Error("Server script must be a .js or .py file");
-            }
-            const command = isPy
-                ? process.platform === "win32"
-                    ? "python"
-                    : "python3"
-                : process.execPath;
-
-            this.transport = new StdioClientTransport({
-                command,
-                args: [serverScriptPath],
-            });
-            await this.mcp.connect(this.transport);
-
-            const toolsResult = await this.mcp.listTools();
-            this.tools = toolsResult.tools.map((tool) => {
-                return {
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.inputSchema,
-                };
-            });
-            console.log(
-                "Connected to server with tools:",
-                this.tools.map(({ name }) => name)
-            );
-        } catch (e) {
-            console.log("Failed to connect to MCP server: ", e);
-            throw e;
-        }
-    }
-
-    async processQuery(query: string) {
-        const messages: MessageParam[] = [
-            {
-                role: "user",
-                content: query,
-            },
-        ];
-
-        const response = await this.llm.messages.create({
-            model: "claude-3-5-sonnet-20241022",
-            max_tokens: 1000,
-            messages,
-            tools: this.tools,
-        });
-
-        const finalText = [];
-        const toolResults = [];
-
-        for (const content of response.content) {
-            if (content.type === "text") {
-                finalText.push(content.text);
-            } else if (content.type === "tool_use") {
-                const toolName = content.name;
-                const toolArgs = content.input as { [x: string]: unknown } | undefined;
-
-                const result = await this.mcp.callTool({
-                    name: toolName,
-                    arguments: toolArgs,
-                });
-                toolResults.push(result);
-                finalText.push(
-                    `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
-                );
-
-                messages.push({
-                    role: "user",
-                    content: result.content as string,
-                });
-
-                const response = await this.llm.messages.create({
-                    model: "claude-3-5-sonnet-20241022",
-                    max_tokens: 1000,
-                    messages,
-                });
-
-                finalText.push(
-                    response.content[0].type === "text" ? response.content[0].text : ""
-                );
-            }
-        }
-
-        return finalText.join("\n");
-    }
-
-    async cleanup() {
-        await this.mcp.close();
-    }
+if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+  console.error("Error: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are required");
+  process.exit(1);
 }
 
-async function main() {
-    const app = express();
-    const port = process.env.PORT || 3000;
+const gmailProvider = new GmailProvider();
+await gmailProvider.initialize();
 
-    // Middleware
-    app.use(cors());
-    app.use(express.json());
+const calendarProvider = new GoogleCalendarProvider();
+await calendarProvider.initialize();
 
-    const mcpClient = new MCPClient();
+// Tool handlers
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  debugLog('List tools request received');
+  return { tools: [...gmailProvider.getToolDefinitions(), ...calendarProvider.getToolDefinitions()] };
+});
 
-    try {
-        await mcpClient.connectToServer("./build/server/index.js");
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  debugLog('Call tool request received:', JSON.stringify(request, null, 2));
 
-        // Health check endpoint
-        const healthCheck: RequestHandler = (req, res) => {
-            res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
+  try {
+    const { name, arguments: args } = request.params;
+    const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || "";
+    if (!args) {
+      throw new Error("No arguments provided");
+    }
+    let result;
+    switch (name) {
+      case 'gmail_sendEmail':
+        result = await gmailProvider.sendEmail(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'gmail_draftEmail':
+        result = await gmailProvider.draftEmail(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'gmail_listEmails':
+        result = await gmailProvider.listEmails(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'gmail_getEmail':
+        result = await gmailProvider.getEmail(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'gmail_deleteEmail':
+        result = await gmailProvider.deleteEmail(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'gmail_modifyLabels':
+        result = await gmailProvider.modifyLabels(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'list_calendars':
+        result = await calendarProvider.listCalendars(GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'list_events':
+        result = await calendarProvider.listEvents(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'create_event':
+        result = await calendarProvider.createEvent(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'get_event':
+        result = await calendarProvider.getEvent(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'update_event':
+        result = await calendarProvider.updateEvent(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'delete_event':
+        result = await calendarProvider.deleteEvent(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'find_available_slots':
+        result = await calendarProvider.findAvailableSlots(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      case 'get_upcoming_meetings':
+        result = await calendarProvider.getUpcomingMeetings(args, GOOGLE_REFRESH_TOKEN);
+        break;
+      default:
+        return {
+          content: [{ type: "text", text: JSON.stringify(`Unknown tool: ${name}`) }],
+          isError: true
         };
-        app.get('/health', healthCheck);
-
-        // LLM interaction endpoint
-        const chatHandler: RequestHandler = async (req, res) => {
-            try {
-                const { query } = req.body;
-                if (!query) {
-                    res.status(400).json({ error: 'Query is required' });
-                    return;
-                }
-
-                const response = await mcpClient.processQuery(query);
-                res.json({ response });
-            } catch (error) {
-                console.error('Error processing query:', error);
-                res.status(500).json({ error: 'Failed to process query' });
-            }
-        };
-        app.post('/chat', chatHandler);
-
-        app.listen(port, () => {
-            console.log(`Server running on port ${port}`);
-            console.log(`Health check: http://localhost:${port}/health`);
-            console.log(`Chat endpoint: http://localhost:${port}/chat`);
-        });
-
-        // Handle graceful shutdown
-        process.on('SIGTERM', async () => {
-            console.log('SIGTERM received. Shutting down gracefully...');
-            await mcpClient.cleanup();
-            process.exit(0);
-        });
-
-    } catch (error) {
-        console.error('Failed to start server:', error);
-        process.exit(1);
     }
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      isError: false
+    };
+  } catch (error) {
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify(`Error: ${error instanceof Error ? error.message : String(error)}`)
+      }],
+      isError: true
+    };
+  }
+});
+
+// Server startup function
+async function runServer() {
+  debugLog('Starting server');
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  debugLog('Server connected to transport');
+  console.error("Calendar MCP Server running on stdio");
 }
 
-main();
+// Start the server
+runServer().catch((error) => {
+  debugLog('Fatal server error:', error);
+  console.error("Fatal error running server:", error);
+  process.exit(1);
+});

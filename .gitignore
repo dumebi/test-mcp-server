@@ -2,5 +2,6 @@
 node_modules/
 .env
 .env.example
+old/
 
 .google_refresh_token
