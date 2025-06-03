@@ -16,6 +16,8 @@ import express from "express";
 import type { RequestHandler } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import * as fs from 'fs';
+import * as path from 'path';
 
 dotenv.config();
 
@@ -43,7 +45,6 @@ class MCPClient {
         })
 
     }
-
     async connectToServer(serverScriptPath: string) {
         try {
             const isJs = serverScriptPath.endsWith(".js");
@@ -139,6 +140,13 @@ class MCPClient {
         await this.mcp.close();
     }
 }
+
+const auth = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI
+      );
+
 const googleProviderScopes = {
     contacts: [
         "https://www.googleapis.com/auth/contacts.readonly",
@@ -158,12 +166,9 @@ const googleProviderScopes = {
 }
 
 function getAuthUrl(): string {
-    const auth = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI
-      );
-
+    if (!auth) {
+        throw new Error('Auth client not initialized');
+    }
     return auth.generateAuthUrl({
       access_type: 'offline',
       scope: [
@@ -219,8 +224,32 @@ async function main() {
             res.json({ authUrl });
         });
 
-        app.get('/auth/callback', (req, res) => {
-            console.log('Authorization callback received', req);
+        app.get('/auth/callback', async (req, res) => {
+            const code = req.query.code as string;
+            if (!code) {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log('Authorization code received:', code);
+            const { tokens } = await auth.getToken(code);
+            console.log({refresh: tokens.refresh_token});
+            // Update .env file with the refresh token
+            const envPath = path.resolve(process.cwd(), '.env');
+            let envContent = fs.readFileSync(envPath, 'utf8');
+            
+            if (envContent.includes('GOOGLE_REFRESH_TOKEN=')) {
+            // Replace existing refresh token
+            envContent = envContent.replace(
+                /GOOGLE_REFRESH_TOKEN=.*(\r?\n|$)/,
+                `GOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'$1`
+            );
+            } else {
+            // Add refresh token
+            envContent += `\nGOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'\n`;
+            }
+            
+            // Write updated content back to .env file
+            fs.writeFileSync(envPath, envContent);
         });
 
         // LLM interaction endpoint
