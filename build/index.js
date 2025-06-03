@@ -4,8 +4,9 @@ dotenv.config(); // 로컬 개발 시 .env 파일을 읽습니다.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { GmailProvider } from './tools/gmailProvider.js';
-import { GoogleCalendarProvider } from './tools/googleCalendarProvider.js';
+import { GmailProvider } from './providers/gmailProvider.js';
+import { GoogleCalendarProvider } from './providers/googleCalendarProvider.js';
+import { GoogleContactsProvider } from './providers/gContactsProvider.js';
 // 디버그 로그
 function debugLog(...args) {
     console.error('DEBUG:', new Date().toISOString(), ...args);
@@ -31,10 +32,16 @@ const gmailProvider = new GmailProvider();
 await gmailProvider.initialize();
 const calendarProvider = new GoogleCalendarProvider();
 await calendarProvider.initialize();
+const contactsProvider = new GoogleContactsProvider();
+await contactsProvider.initialize();
 // Tool handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     debugLog('List tools request received');
-    return { tools: [...gmailProvider.getToolDefinitions(), ...calendarProvider.getToolDefinitions()] };
+    return { tools: [
+            ...gmailProvider.getToolDefinitions(),
+            ...calendarProvider.getToolDefinitions(),
+            ...contactsProvider.getToolDefinitions(),
+        ] };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     debugLog('Call tool request received:', JSON.stringify(request, null, 2));
@@ -44,7 +51,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!args) {
             throw new Error("No arguments provided");
         }
-        // console.log({name, args});
         let result;
         switch (name) {
             case 'gmail_sendEmail':
@@ -88,6 +94,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
             case 'get_upcoming_meetings':
                 result = await calendarProvider.getUpcomingMeetings(args, GOOGLE_REFRESH_TOKEN);
+                break;
+            case 'contacts_listContacts':
+                result = await contactsProvider.listContacts(args, GOOGLE_REFRESH_TOKEN);
+                break;
+            case 'contacts_searchContacts':
+                result = await contactsProvider.searchContacts(args, GOOGLE_REFRESH_TOKEN);
+                break;
+            case 'contacts_getContact':
+                result = await contactsProvider.getContact(args, GOOGLE_REFRESH_TOKEN);
                 break;
             default:
                 return {

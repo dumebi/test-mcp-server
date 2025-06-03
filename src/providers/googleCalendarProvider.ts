@@ -25,33 +25,6 @@ export class GoogleCalendarProvider {
         process.env.GOOGLE_CLIENT_SECRET,
         process.env.GOOGLE_REDIRECT_URI
       );
-
-      // Set credentials if they exist
-      // if (process.env.GOOGLE_REFRESH_TOKEN) {
-      //   try {
-          
-
-      //     // Test the connection
-      //     await this.calendar.calendarList.list();
-      //     console.error('Successfully authenticated with Google Calendar API');
-      //   } catch (error) {
-      //     console.error('Error authenticating with refresh token:', error);
-      //     this.calendar = null;
-      //     this.auth = new google.auth.OAuth2(
-      //       process.env.GOOGLE_CLIENT_ID,
-      //       process.env.GOOGLE_CLIENT_SECRET,
-      //       process.env.GOOGLE_REDIRECT_URI
-      //     );
-
-      //     // Show auth URL since refresh token is invalid
-      //     console.error('\n⚠️ Invalid refresh token. Please re-authorize the application.');
-      //     this.showAuthUrl();
-      //   }
-      // } else {
-      //   // If no refresh token, prepare for authorization
-      //   console.error('\n⚠️ No refresh token found. Please authorize the application.');
-      //   this.showAuthUrl();
-      // }
     } catch (error) {
       console.error('Error initializing Google Calendar client:', error);
       throw error;
