@@ -8,6 +8,8 @@ import {
 // MCP Client
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { google } from 'googleapis';
+
 
 // Express
 import express from "express";
@@ -137,6 +139,61 @@ class MCPClient {
         await this.mcp.close();
     }
 }
+const googleProviderScopes = {
+    contacts: [
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/contacts",],
+    calendar: [
+        "https://www.googleapis.com/auth/calendar"
+    ],
+    gmail: [
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    ],
+    drive: [
+        "https://www.googleapis.com/auth/drive",
+    ],
+}
+
+function getAuthUrl(): string {
+    const auth = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI
+      );
+
+    return auth.generateAuthUrl({
+      access_type: 'offline',
+      scope: [
+        "profile", // Basic profile info
+        "email", // User email address
+        "https://www.googleapis.com/auth/gmail.modify", // Modify Gmail data
+        "https://www.googleapis.com/auth/gmail.readonly", // Read Gmail data
+        "https://www.googleapis.com/auth/drive", // Access Google Drive
+        "https://www.googleapis.com/auth/calendar", // Access Google Calendar
+        "https://www.googleapis.com/auth/tasks", // Access Google Tasks
+        "https://www.googleapis.com/auth/youtube.readonly", // Read YouTube data
+        "https://www.googleapis.com/auth/contacts.readonly", // Read Google Contacts
+        "https://www.googleapis.com/auth/contacts", // Manage Google Contacts
+      ],
+      prompt: 'consent', // Always show consent screen to ensure we get a refresh token
+      include_granted_scopes: true
+    });
+  }
+
+function showAuthUrl(): string {
+    const authUrl = getAuthUrl();
+    console.error('\n🔑 Authorization Required');
+    console.error('-------------------');
+    console.error('1. Visit this URL to authorize the application:');
+    console.error(authUrl);
+    console.error('\n2. After approval, you will be redirected to a URL. Copy the "code" parameter from that URL.');
+    console.error('\n3. Use the set_auth_code tool or run this command:');
+    console.error(`   npx ts-node src/auth-helper.js "PASTE_AUTH_CODE_HERE"\n`);
+    return authUrl;
+  }
 
 async function main() {
     const app = express();
@@ -149,13 +206,22 @@ async function main() {
     const mcpClient = new MCPClient();
 
     try {
-        await mcpClient.connectToServer("./build/server/index.js");
-
+        await mcpClient.connectToServer("./build/index.js");
+        console.log("MCP Client connected to server");
+        console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
         // Health check endpoint
         const healthCheck: RequestHandler = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
         };
         app.get('/health', healthCheck);
+        app.get('/authurl', (req, res) => {
+            const authUrl = showAuthUrl();
+            res.json({ authUrl });
+        });
+
+        app.get('/auth/callback', (req, res) => {
+            console.log('Authorization callback received', req);
+        });
 
         // LLM interaction endpoint
         const chatHandler: RequestHandler = async (req, res) => {
