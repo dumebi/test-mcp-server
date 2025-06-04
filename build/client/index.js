@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import pkg from '@slack/oauth';
 import { createEventAdapter } from '@slack/events-api';
+import axios from "axios";
 const { InstallProvider, LogLevel, FileInstallationStore } = pkg;
 dotenv.config();
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -353,8 +354,7 @@ async function main() {
                     }
                     else {
                         // Add access token
-                        envContent += `\nNOTION_ACCESS_TOKEN='${data.access_token}'\n`;
-                        envContent += `\nNOTION_ACCESS_TOKEN='${data.access_token}'\n`;
+                        envContent += `\nNOTION_ACCESS_TOKEN=${data.access_token}\n`;
                     }
                     // Write updated content back to .env file
                     fs.writeFileSync(envPath, envContent);
@@ -364,6 +364,58 @@ async function main() {
                 .catch(error => {
                 console.error('Error during Notion token fetch:', error);
                 res.status(500).json({ error: 'Failed to fetch Notion token' });
+            });
+        });
+        app.get('/auth/github/callback', async (req, res) => {
+            const { code } = req.query;
+            if (!code || typeof code !== 'string') {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log('Authorization code received:', code);
+            // Fetch Github access token
+            if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
+                res.status(500).json({ error: 'Notion client ID and secret are not set' });
+                return;
+            }
+            axios.post('https://github.com/login/oauth/access_token', null, {
+                params: {
+                    client_id: process.env.GITHUB_CLIENT_ID,
+                    client_secret: process.env.GITHUB_CLIENT_SECRET,
+                    code,
+                    redirect_uri: process.env.GITHUB_REDIRECT_URI,
+                },
+                headers: {
+                    Accept: 'application/json',
+                },
+            })
+                .then(response => response.data)
+                .then(data => {
+                if (data.error) {
+                    console.error('Error fetching Github token:', data.error);
+                    res.status(500).json({ error: 'Failed to fetch Github token' });
+                }
+                else {
+                    console.log('Github token received:', data);
+                    // Update .env file with the access token
+                    const envPath = path.resolve(process.cwd(), '.env');
+                    let envContent = fs.readFileSync(envPath, 'utf8');
+                    if (envContent.includes('GITHUB_ACCESS_TOKEN=')) {
+                        // Replace existing access token
+                        envContent = envContent.replace(/NOTION_ACCESS_TOKEN=.*(\r?\n|$)/, `GITHUB_ACCESS_TOKEN='${data.access_token}'$1`);
+                    }
+                    else {
+                        // Add access token
+                        envContent += `\GITHUB_ACCESS_TOKEN=${data.access_token}\n`;
+                    }
+                    // Write updated content back to .env file
+                    fs.writeFileSync(envPath, envContent);
+                    res.status(200).json({ message: 'Authorization successful. Access token saved.' });
+                }
+            })
+                .catch(error => {
+                console.error('Error during Github token fetch:', error);
+                res.status(500).json({ error: 'Failed to fetch Github token' });
             });
         });
         app.get('/auth/google', (req, res) => {
@@ -379,7 +431,9 @@ async function main() {
                 scopes,
                 userScopes,
             });
-            // res.json({ authUrl });
+        });
+        app.get('/auth/github', async (req, res) => {
+            res.json({ url: `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&scope=user` });
         });
         // LLM interaction endpoint
         const chatHandler = async (req, res) => {
