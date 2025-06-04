@@ -8,6 +8,11 @@ import { google } from 'googleapis';
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import * as fs from 'fs';
+import * as path from 'path';
+import pkg from '@slack/oauth';
+import { createEventAdapter } from '@slack/events-api';
+const { InstallProvider, LogLevel, FileInstallationStore } = pkg;
 dotenv.config();
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (!ANTHROPIC_API_KEY) {
@@ -23,7 +28,7 @@ class MCPClient {
             apiKey: ANTHROPIC_API_KEY,
         });
         this.mcp = new Client({
-            name: "mcp-client-cli", version: "1.0.0"
+            name: "laura-ai", version: "1.0.0"
         }, {
             capabilities: {
                 tools: {}
@@ -70,7 +75,7 @@ class MCPClient {
             },
         ];
         const response = await this.llm.messages.create({
-            model: "claude-3-5-sonnet-20241022",
+            model: "claude-sonnet-4-20250514",
             max_tokens: 1000,
             messages,
             tools: this.tools,
@@ -108,6 +113,7 @@ class MCPClient {
         await this.mcp.close();
     }
 }
+const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
 const googleProviderScopes = {
     contacts: [
         "https://www.googleapis.com/auth/contacts.readonly",
@@ -127,7 +133,9 @@ const googleProviderScopes = {
     ],
 };
 function getAuthUrl() {
-    const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+    if (!auth) {
+        throw new Error('Auth client not initialized');
+    }
     return auth.generateAuthUrl({
         access_type: 'offline',
         scope: [
@@ -163,6 +171,7 @@ async function main() {
     // Middleware
     app.use(cors());
     app.use(express.json());
+    // app.use('/slack/events', slackEvents.requestListener());
     const mcpClient = new MCPClient();
     try {
         await mcpClient.connectToServer("./build/index.js");
@@ -172,13 +181,145 @@ async function main() {
         const healthCheck = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
         };
+        const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
+        if (!slackSigningSecret) {
+            throw new Error("SLACK_SIGNING_SECRET is not set");
+        }
+        const slackEvents = createEventAdapter(slackSigningSecret, {
+            includeBody: true,
+        });
+        const scopes = [
+            'app_mentions:read',
+            'channels:read',
+            'groups:read',
+            'channels:manage',
+            'chat:write',
+            'incoming-webhook',
+        ];
+        const userScopes = ['chat:write'];
+        const slackClientId = process.env.SLACK_CLIENT_ID;
+        const slackClientSecret = process.env.SLACK_CLIENT_SECRET;
+        const slackStateSecret = process.env.SLACK_STATE_SECRET;
+        if (!slackClientId) {
+            throw new Error("SLACK_CLIENT_ID is not set");
+        }
+        if (!slackClientSecret) {
+            throw new Error("SLACK_CLIENT_SECRET is not set");
+        }
+        if (!slackStateSecret) {
+            throw new Error("SLACK_STATE_SECRET is not set");
+        }
+        const installer = new InstallProvider({
+            clientId: slackClientId,
+            clientSecret: slackClientSecret,
+            authVersion: 'v2',
+            stateSecret: "slackStateSecret",
+            stateStore: {
+                async generateStateParam(installOptions, now) {
+                    console.log({ installOptions });
+                    return await `state-${now}-${Math.random().toString(36).substring(2, 15)}`;
+                },
+                async verifyStateParam(now, state) {
+                    console.log({ state });
+                    const parts = state.split('-');
+                    if (parts.length < 3 || parts[0] !== 'state') {
+                        throw new Error('Invalid state parameter');
+                    }
+                    const timestamp = parseInt(parts[1], 10);
+                    if (isNaN(timestamp) || now.getTime() - timestamp > 10 * 60 * 1000) { // 10 minutes
+                        throw new Error('State parameter expired');
+                    }
+                    return {
+                        scopes,
+                        userScopes,
+                        redirectUri: '/auth/slack/callback',
+                        isEnterpriseInstall: false,
+                        // Optionally add teamId, metadata, etc. if needed
+                    };
+                },
+            },
+            installationStore: {
+                storeInstallation: async (installation) => {
+                    console.log({ installation });
+                },
+                fetchInstallation: async (installQuery, logger) => {
+                    return {
+                        team: {
+                            id: "dummy-team-id",
+                            name: "Dummy Team"
+                        },
+                        enterprise: installQuery.isEnterpriseInstall
+                            ? {
+                                id: "dummy-enterprise-id",
+                                name: "Dummy Enterprise"
+                            }
+                            : undefined,
+                        isEnterpriseInstall: false,
+                        user: {
+                            id: "dummy-user-id",
+                            token: "dummy-user-token",
+                            refreshToken: "dummy-refresh-token",
+                            expiresAt: Date.now() + 3600 * 1000, // 1 hour from now
+                            scopes: ["chat:write"],
+                        },
+                        tokenType: "bot",
+                        appId: "dummy-app-id",
+                        authVersion: "v2",
+                        bot: {
+                            scopes: ["chat:write"],
+                            token: "dummy-bot-token",
+                            refreshToken: "dummy-bot-refresh-token",
+                            expiresAt: Date.now() + 3600 * 1000, // 1 hour from now
+                            id: "dummy-bot-id",
+                            userId: "dummy-bot-user-id"
+                        }
+                    };
+                },
+                deleteInstallation: async (installQuery) => { },
+            },
+            logLevel: LogLevel.DEBUG,
+        });
         app.get('/health', healthCheck);
-        app.get('/authurl', (req, res) => {
+        app.get('/auth/google/callback', async (req, res) => {
+            const { code } = req.query;
+            if (!code || typeof code !== 'string') {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log('Authorization code received:', code);
+            const { tokens } = await auth.getToken(code);
+            console.log({ refresh: tokens.refresh_token });
+            // Update .env file with the refresh token
+            const envPath = path.resolve(process.cwd(), '.env');
+            let envContent = fs.readFileSync(envPath, 'utf8');
+            if (envContent.includes('GOOGLE_REFRESH_TOKEN=')) {
+                // Replace existing refresh token
+                envContent = envContent.replace(/GOOGLE_REFRESH_TOKEN=.*(\r?\n|$)/, `GOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'$1`);
+            }
+            else {
+                // Add refresh token
+                envContent += `\nGOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'\n`;
+            }
+            // Write updated content back to .env file
+            fs.writeFileSync(envPath, envContent);
+            res.status(200).json({ message: 'Authorization successful. Refresh token saved.' });
+        });
+        app.get('/auth/slack/callback', async (req, res) => {
+            await installer.handleCallback(req, res);
+            const result = await installer.authorize({ teamId: 'my-team-ID', isEnterpriseInstall: false, userId: 'my-user-ID', enterpriseId: 'my-enterprise-ID' });
+            console.log({ result });
+        });
+        app.get('/auth/google', (req, res) => {
+            // const {tools} = req.query;
             const authUrl = showAuthUrl();
             res.json({ authUrl });
         });
-        app.get('/auth/callback', (req, res) => {
-            console.log('Authorization callback received', req);
+        app.get('/auth/slack', async (req, res) => {
+            await installer.handleInstallPath(req, res, {}, {
+                scopes,
+                userScopes,
+            });
+            // res.json({ authUrl });
         });
         // LLM interaction endpoint
         const chatHandler = async (req, res) => {

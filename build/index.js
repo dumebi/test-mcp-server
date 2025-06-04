@@ -131,7 +131,7 @@ async function runServer() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     debugLog('Server connected to transport');
-    console.error("Calendar MCP Server running on stdio");
+    console.error("Laura MCP Server running on stdio");
 }
 // Start the server
 runServer().catch((error) => {
