@@ -37,7 +37,7 @@ class MCPClient {
             apiKey: ANTHROPIC_API_KEY,
         });
         this.mcp = new Client({
-            name: "mcp-client-cli", version: "1.0.0"
+            name: "laura-ai", version: "1.0.0"
         }, {
             capabilities: {
                 tools: {}
@@ -91,7 +91,7 @@ class MCPClient {
         ];
 
         const response = await this.llm.messages.create({
-            model: "claude-3-5-sonnet-20241022",
+            model: "claude-sonnet-4-20250514",
             max_tokens: 1000,
             messages,
             tools: this.tools,
@@ -250,6 +250,7 @@ async function main() {
             
             // Write updated content back to .env file
             fs.writeFileSync(envPath, envContent);
+            res.status(200).json({ message: 'Authorization successful. Refresh token saved.' });
         });
 
         // LLM interaction endpoint
