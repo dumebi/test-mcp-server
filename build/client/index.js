@@ -309,10 +309,70 @@ async function main() {
             const result = await installer.authorize({ teamId: 'my-team-ID', isEnterpriseInstall: false, userId: 'my-user-ID', enterpriseId: 'my-enterprise-ID' });
             console.log({ result });
         });
+        app.get('/auth/notion/callback', async (req, res) => {
+            const { code } = req.query;
+            if (!code || typeof code !== 'string') {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log('Authorization code received:', code);
+            const encoded = Buffer.from(`${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`).toString("base64");
+            console.log('Encoded credentials:', encoded);
+            // Fetch Notion access token
+            if (!process.env.NOTION_CLIENT_ID || !process.env.NOTION_CLIENT_SECRET) {
+                res.status(500).json({ error: 'Notion client ID and secret are not set' });
+                return;
+            }
+            fetch('https://api.notion.com/v1/oauth/token', {
+                method: 'POST',
+                headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/json",
+                    'Authorization': `Basic ${encoded}`,
+                },
+                body: JSON.stringify({
+                    grant_type: 'authorization_code',
+                    code: code,
+                    redirect_uri: process.env.NOTION_REDIRECT_URI,
+                }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                if (data.error) {
+                    console.error('Error fetching Notion token:', data.error);
+                    res.status(500).json({ error: 'Failed to fetch Notion token' });
+                }
+                else {
+                    console.log('Notion token received:', data);
+                    // Update .env file with the access token
+                    const envPath = path.resolve(process.cwd(), '.env');
+                    let envContent = fs.readFileSync(envPath, 'utf8');
+                    if (envContent.includes('NOTION_ACCESS_TOKEN=')) {
+                        // Replace existing access token
+                        envContent = envContent.replace(/NOTION_ACCESS_TOKEN=.*(\r?\n|$)/, `NOTION_ACCESS_TOKEN='${data.access_token}'$1`);
+                    }
+                    else {
+                        // Add access token
+                        envContent += `\nNOTION_ACCESS_TOKEN='${data.access_token}'\n`;
+                        envContent += `\nNOTION_ACCESS_TOKEN='${data.access_token}'\n`;
+                    }
+                    // Write updated content back to .env file
+                    fs.writeFileSync(envPath, envContent);
+                    res.status(200).json({ message: 'Authorization successful. Access token saved.' });
+                }
+            })
+                .catch(error => {
+                console.error('Error during Notion token fetch:', error);
+                res.status(500).json({ error: 'Failed to fetch Notion token' });
+            });
+        });
         app.get('/auth/google', (req, res) => {
             // const {tools} = req.query;
             const authUrl = showAuthUrl();
             res.json({ authUrl });
+        });
+        app.get('/auth/notion', (req, res) => {
+            res.json({ url: `https://api.notion.com/v1/oauth/authorize?client_id=${process.env.NOTION_CLIENT_ID}&response_type=code&owner=user&redirect_uri=${process.env.NOTION_REDIRECT_URI}` });
         });
         app.get('/auth/slack', async (req, res) => {
             await installer.handleInstallPath(req, res, {}, {
