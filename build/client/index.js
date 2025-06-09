@@ -406,7 +406,7 @@ async function main() {
                     }
                     else {
                         // Add access token
-                        envContent += `\GITHUB_ACCESS_TOKEN=${data.access_token}\n`;
+                        envContent += `\nGITHUB_ACCESS_TOKEN=${data.access_token}\n`;
                     }
                     // Write updated content back to .env file
                     fs.writeFileSync(envPath, envContent);
@@ -419,7 +419,6 @@ async function main() {
             });
         });
         app.get('/auth/google', (req, res) => {
-            // const {tools} = req.query;
             const authUrl = showAuthUrl();
             res.json({ authUrl });
         });

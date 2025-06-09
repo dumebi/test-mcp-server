@@ -140,6 +140,33 @@ export class GoogleCalendarProvider {
                                 type: 'string',
                             },
                         },
+                        conferenceData: {
+                            type: 'object',
+                            properties: {
+                                createRequest: {
+                                    type: 'object',
+                                    properties: {
+                                        requestId: {
+                                            type: 'string',
+                                            description: 'Unique identifier for the conference request',
+                                        },
+                                        conferenceSolutionKey: {
+                                            type: 'object',
+                                            properties: {
+                                                type: {
+                                                    type: 'string',
+                                                    description: 'Type of conference solution (e.g., hangoutsMeet)',
+                                                    default: 'hangoutsMeet',
+                                                },
+                                            },
+                                            required: ['type'],
+                                        },
+                                    },
+                                    required: ['requestId', 'conferenceSolutionKey'],
+                                },
+                            },
+                            description: 'Conference data for the event (e.g., Google Meet link)',
+                        },
                         reminders: {
                             type: "object",
                             properties: {
@@ -230,6 +257,33 @@ export class GoogleCalendarProvider {
                             items: {
                                 type: 'string',
                             },
+                        },
+                        conferenceData: {
+                            type: 'object',
+                            properties: {
+                                createRequest: {
+                                    type: 'object',
+                                    properties: {
+                                        requestId: {
+                                            type: 'string',
+                                            description: 'Unique identifier for the conference request',
+                                        },
+                                        conferenceSolutionKey: {
+                                            type: 'object',
+                                            properties: {
+                                                type: {
+                                                    type: 'string',
+                                                    description: 'Type of conference solution (e.g., hangoutsMeet)',
+                                                    default: 'hangoutsMeet',
+                                                },
+                                            },
+                                            required: ['type'],
+                                        },
+                                    },
+                                    required: ['requestId', 'conferenceSolutionKey'],
+                                },
+                            },
+                            description: 'Conference data for the event (e.g., Google Meet link)',
                         },
                         reminders: {
                             type: "object",
@@ -418,6 +472,16 @@ export class GoogleCalendarProvider {
                     timeZone: 'UTC',
                 },
             };
+            if (parameters.conferenceData) {
+                eventData.conferenceData = {
+                    createRequest: {
+                        requestId: parameters.conferenceData.requestId || `request-${Date.now()}`,
+                        conferenceSolutionKey: {
+                            type: parameters.conferenceData.conferenceSolutionKey?.type || 'hangoutsMeet',
+                        },
+                    },
+                };
+            }
             // Add attendees if provided
             if (parameters.attendees) {
                 eventData.attendees = parameters.attendees.map((email) => ({ email }));
@@ -551,6 +615,20 @@ export class GoogleCalendarProvider {
                     dateTime: parameters.end,
                     timeZone: 'UTC',
                 };
+            }
+            if (parameters.conferenceData) {
+                eventData.conferenceData = {
+                    createRequest: {
+                        requestId: parameters.conferenceData.requestId || `request-${Date.now()}`,
+                        conferenceSolutionKey: {
+                            type: parameters.conferenceData.conferenceSolutionKey?.type || 'hangoutsMeet',
+                        },
+                    },
+                };
+            }
+            // Update recurrence if provided
+            if (parameters.recurrence) {
+                eventData.recurrence = parameters.recurrence;
             }
             // Update attendees if provided
             if (parameters.attendees) {
