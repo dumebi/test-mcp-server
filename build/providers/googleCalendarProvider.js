@@ -498,6 +498,7 @@ export class GoogleCalendarProvider {
                 calendarId,
                 requestBody: eventData,
                 sendUpdates: 'all',
+                conferenceDataVersion: 1, // Required for conference data
             });
             return response;
             //  {
@@ -643,6 +644,7 @@ export class GoogleCalendarProvider {
                 eventId,
                 requestBody: eventData,
                 sendUpdates: 'all',
+                conferenceDataVersion: 1, // Required for conference data
             });
             return response;
             //  {

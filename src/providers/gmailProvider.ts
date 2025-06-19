@@ -9,6 +9,7 @@ import * as dotenv from 'dotenv';
 import {
   ToolResponse,
 } from '../utils/types.js';
+import { threadId } from 'worker_threads';
 
 // Load environment variables
 dotenv.config();
@@ -128,6 +129,10 @@ export class GmailProvider {
               type: 'string',
               description: 'Email body content',
             },
+            threadId: {
+              type: 'string',
+              description: 'Thread ID to send the email in (optional)',
+            },
             attachments: {
               type: 'array',
               description: 'List of file paths to attach to the email',
@@ -170,6 +175,10 @@ export class GmailProvider {
             body: {
               type: 'string',
               description: 'Email body content',
+            },
+            threadId: {
+              type: 'string',
+              description: 'Thread ID to send the email in (optional)',
             },
             attachments: {
               type: 'array',
@@ -295,7 +304,7 @@ export class GmailProvider {
 
       // Initialize the mail client
     this.gmail = google.gmail({ version: 'v1', auth: this.auth });
-    const { to, subject, body, attachments, cc, bcc, isHtml = false } = parameters;
+    const { to, subject, body, attachments, cc, bcc, isHtml = false, threadId } = parameters;
     try {
       const emailLines = [];
       emailLines.push(`To: ${to}`);
@@ -307,6 +316,11 @@ export class GmailProvider {
       );
       emailLines.push("");
       emailLines.push(body);
+
+      if(threadId) {
+        emailLines.push(`In-Reply-To: ${threadId}`);
+        emailLines.push(`References: ${threadId}`);
+      }
 
       const email = emailLines.join("\r\n");
       const encodedEmail = Buffer.from(email)

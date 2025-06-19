@@ -20,16 +20,25 @@ if (!ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY is not set");
 }
 class MCPClient {
-    mcp;
+    lauraMcp;
+    notionMcp;
     llm;
-    transport = null;
+    lauraTransport = null;
+    notionTransport = null;
     tools = [];
     constructor() {
         this.llm = new Anthropic({
             apiKey: ANTHROPIC_API_KEY,
         });
-        this.mcp = new Client({
+        this.lauraMcp = new Client({
             name: "laura-ai", version: "1.0.0"
+        }, {
+            capabilities: {
+                tools: {}
+            }
+        });
+        this.notionMcp = new Client({
+            name: "laura-notion", version: "1.0.0"
         }, {
             capabilities: {
                 tools: {}
@@ -48,18 +57,32 @@ class MCPClient {
                     ? "python"
                     : "python3"
                 : process.execPath;
-            this.transport = new StdioClientTransport({
+            this.lauraTransport = new StdioClientTransport({
                 command,
                 args: [serverScriptPath],
+                env: {
+                    "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
+                    "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
+                    "GOOGLE_REFRESH_TOKEN": process.env.GOOGLE_REFRESH_TOKEN || ""
+                }
             });
-            await this.mcp.connect(this.transport);
-            const toolsResult = await this.mcp.listTools();
-            this.tools = toolsResult.tools.map((tool) => {
-                return {
+            this.notionTransport = new StdioClientTransport({
+                command: "npx",
+                args: ["-y", "@notionhq/notion-mcp-server"],
+            });
+            await this.notionMcp.connect(this.notionTransport);
+            await this.lauraMcp.connect(this.lauraTransport);
+            const [notionMcpToolsResult, lauraMcpToolsResult] = await Promise.all([
+                this.notionMcp.listTools(),
+                this.lauraMcp.listTools()
+            ]);
+            console.log({ notionMcpToolsResult, lauraMcpToolsResult });
+            [...notionMcpToolsResult.tools, ...lauraMcpToolsResult.tools].map((tool) => {
+                this.tools.push({
                     name: tool.name,
                     description: tool.description,
                     input_schema: tool.inputSchema,
-                };
+                });
             });
             console.log("Connected to server with tools:", this.tools.map(({ name }) => name));
         }
@@ -88,9 +111,10 @@ class MCPClient {
                 finalText.push(content.text);
             }
             else if (content.type === "tool_use") {
+                console.log("Tool use detected:", content);
                 const toolName = content.name;
                 const toolArgs = content.input;
-                const result = await this.mcp.callTool({
+                const result = await this.lauraMcp.callTool({
                     name: toolName,
                     arguments: toolArgs,
                 });
@@ -111,7 +135,8 @@ class MCPClient {
         return finalText.join("\n");
     }
     async cleanup() {
-        await this.mcp.close();
+        await this.lauraMcp.close();
+        await this.notionMcp.close();
     }
 }
 const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);

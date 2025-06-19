@@ -19,9 +19,7 @@ import dotenv from "dotenv";
 import * as fs from 'fs';
 import * as path from 'path';
 import pkg from '@slack/oauth';
-import {WebClient} from '@slack/web-api';
 import { createEventAdapter } from '@slack/events-api';
-import { toBase64 } from "@anthropic-ai/sdk/core.mjs";
 import axios from "axios";
 const { InstallProvider, LogLevel, FileInstallationStore } = pkg;
 dotenv.config();
@@ -32,17 +30,26 @@ if (!ANTHROPIC_API_KEY) {
 }
 
 class MCPClient {
-    private mcp: Client;
+    private lauraMcp: Client;
+    private notionMcp: Client;
     private llm: Anthropic;
-    private transport: StdioClientTransport | null = null;
+    private lauraTransport: StdioClientTransport | null = null;
+    private notionTransport: StdioClientTransport | null = null;
     public tools: Tool[] = [];
 
     constructor() {
         this.llm = new Anthropic({
             apiKey: ANTHROPIC_API_KEY,
         });
-        this.mcp = new Client({
+        this.lauraMcp = new Client({
             name: "laura-ai", version: "1.0.0"
+        }, {
+            capabilities: {
+                tools: {}
+            }
+        })
+        this.notionMcp = new Client({
+            name: "laura-notion", version: "1.0.0"
         }, {
             capabilities: {
                 tools: {}
@@ -63,19 +70,36 @@ class MCPClient {
                     : "python3"
                 : process.execPath;
 
-            this.transport = new StdioClientTransport({
+            this.lauraTransport = new StdioClientTransport({
                 command,
                 args: [serverScriptPath],
+                env: {
+                    "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
+                    "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
+                    "GOOGLE_REFRESH_TOKEN": process.env.GOOGLE_REFRESH_TOKEN || ""
+                }
             });
-            await this.mcp.connect(this.transport);
 
-            const toolsResult = await this.mcp.listTools();
-            this.tools = toolsResult.tools.map((tool) => {
-                return {
+            this.notionTransport = new StdioClientTransport({
+                command: "npx",
+                args: ["-y", "@notionhq/notion-mcp-server"],
+            });
+            
+            
+            await this.notionMcp.connect(this.notionTransport);
+            await this.lauraMcp.connect(this.lauraTransport);
+
+            const [notionMcpToolsResult, lauraMcpToolsResult] = await Promise.all([
+                this.notionMcp.listTools(),
+                this.lauraMcp.listTools()
+            ]);
+            console.log({notionMcpToolsResult, lauraMcpToolsResult});
+            [...notionMcpToolsResult.tools, ...lauraMcpToolsResult.tools].map((tool) => {
+                this.tools.push({
                     name: tool.name,
                     description: tool.description,
                     input_schema: tool.inputSchema,
-                };
+                });
             });
             console.log(
                 "Connected to server with tools:",
@@ -109,10 +133,11 @@ class MCPClient {
             if (content.type === "text") {
                 finalText.push(content.text);
             } else if (content.type === "tool_use") {
+                console.log("Tool use detected:", content);
                 const toolName = content.name;
                 const toolArgs = content.input as { [x: string]: unknown } | undefined;
 
-                const result = await this.mcp.callTool({
+                const result = await this.lauraMcp.callTool({
                     name: toolName,
                     arguments: toolArgs,
                 });
@@ -142,7 +167,8 @@ class MCPClient {
     }
 
     async cleanup() {
-        await this.mcp.close();
+        await this.lauraMcp.close();
+        await this.notionMcp.close();
     }
 }
 
