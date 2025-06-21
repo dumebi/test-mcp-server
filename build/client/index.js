@@ -20,86 +20,176 @@ if (!ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY is not set");
 }
 class MCPClient {
-    lauraMcp;
-    notionMcp;
     llm;
-    lauraTransport = null;
-    notionTransport = null;
+    servers = new Map();
+    toolToServerMap = new Map(); // Maps tool name to server name
     tools = [];
     constructor() {
         this.llm = new Anthropic({
             apiKey: ANTHROPIC_API_KEY,
         });
-        this.lauraMcp = new Client({
-            name: "laura-ai", version: "1.0.0"
-        }, {
-            capabilities: {
-                tools: {}
-            }
-        });
-        this.notionMcp = new Client({
-            name: "laura-notion", version: "1.0.0"
-        }, {
-            capabilities: {
-                tools: {}
-            }
-        });
+        // Initialize server configurations
+        this.initializeServers();
     }
-    async connectToServer(serverScriptPath) {
-        try {
-            const isJs = serverScriptPath.endsWith(".js");
-            const isPy = serverScriptPath.endsWith(".py");
-            if (!isJs && !isPy) {
-                throw new Error("Server script must be a .js or .py file");
-            }
-            const command = isPy
-                ? process.platform === "win32"
-                    ? "python"
-                    : "python3"
-                : process.execPath;
-            this.lauraTransport = new StdioClientTransport({
-                command,
-                args: [serverScriptPath],
+    initializeServers() {
+        // Laura Google MCP Server
+        this.servers.set('laura-google', {
+            name: 'laura-google',
+            client: new Client({
+                name: "laura-google",
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                command: "", // Will be set dynamically in connectToServer
+                args: [],
                 env: {
                     "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
                     "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
                     "GOOGLE_REFRESH_TOKEN": process.env.GOOGLE_REFRESH_TOKEN || ""
                 }
-            });
-            this.notionTransport = new StdioClientTransport({
+            },
+            toolPrefix: 'laura-mcp:', // Tools from this server start with this prefix
+            isConnected: false
+        });
+        // Notion MCP Server
+        this.servers.set('notion', {
+            name: 'notion',
+            client: new Client({
+                name: "laura-notion",
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
                 command: "npx",
                 args: ["-y", "@notionhq/notion-mcp-server"],
                 env: {
                     "OPENAPI_MCP_HEADERS": process.env.OPENAPI_MCP_HEADERS || "",
-                },
+                }
+            },
+            toolPrefix: 'notionApi:',
+            isConnected: false
+        });
+        // GitHub MCP Server
+        this.servers.set('github', {
+            name: 'github',
+            client: new Client({
+                name: "laura-github",
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                command: "npx",
+                args: ["-y", "@modelcontextprotocol/server-github"],
+                env: {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "",
+                }
+            },
+            toolPrefix: 'github:',
+            isConnected: false
+        });
+    }
+    // Method to easily add new servers
+    addServer(serverName, config) {
+        this.servers.set(serverName, {
+            ...config,
+            name: serverName,
+            transport: null,
+            isConnected: false
+        });
+    }
+    async connectToServer(serverScriptPath) {
+        try {
+            // Set up Laura Google server connection if script path provided
+            if (serverScriptPath) {
+                const isJs = serverScriptPath.endsWith(".js");
+                const isPy = serverScriptPath.endsWith(".py");
+                if (!isJs && !isPy) {
+                    throw new Error("Server script must be a .js or .py file");
+                }
+                const command = isPy
+                    ? process.platform === "win32" ? "python" : "python3"
+                    : process.execPath;
+                const lauraServer = this.servers.get('laura-google');
+                lauraServer.connection.command = command;
+                lauraServer.connection.args = [serverScriptPath];
+            }
+            // Connect to all servers
+            const connectionPromises = Array.from(this.servers.entries()).map(async ([serverName, config]) => {
+                try {
+                    // Skip laura-google if no script path provided
+                    if (serverName === 'laura-google' && !serverScriptPath) {
+                        console.log(`Skipping ${serverName} - no script path provided`);
+                        return;
+                    }
+                    console.log(`Connecting to ${serverName}...`);
+                    // Create transport
+                    config.transport = new StdioClientTransport({
+                        command: config.connection.command,
+                        args: config.connection.args,
+                        env: Object.fromEntries(Object.entries({
+                            ...process.env,
+                            ...config.connection.env
+                        }).filter(([_, v]) => typeof v === "string" && v !== undefined))
+                    });
+                    // Connect client
+                    await config.client.connect(config.transport);
+                    config.isConnected = true;
+                    // Get tools from this server
+                    const toolsResult = await config.client.listTools();
+                    // Map tools to this server and add to global tools list
+                    toolsResult.tools.forEach(tool => {
+                        this.toolToServerMap.set(tool.name, serverName);
+                        this.tools.push({
+                            name: tool.name,
+                            description: tool.description,
+                            input_schema: tool.inputSchema,
+                        });
+                    });
+                    console.log(`✅ Connected to ${serverName} with ${toolsResult.tools.length} tools`);
+                }
+                catch (error) {
+                    console.error(`❌ Failed to connect to ${serverName}:`, error);
+                    config.isConnected = false;
+                    // Continue with other servers even if one fails
+                }
             });
-            // await this.notionMcp.connect(this.notionTransport);
-            await this.lauraMcp.connect(this.lauraTransport);
-            const [lauraTransport] = await Promise.all([
-                // this.notionMcp.listTools(),
-                this.lauraMcp.listTools()
-            ]);
-            // console.log({notionMcpToolsResult, lauraMcpToolsResult});
-            [...lauraTransport.tools].map((tool) => {
-                this.tools.push({
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.inputSchema,
-                });
-            });
-            console.log("Connected to server with tools:", this.tools.map(({ name }) => name));
+            await Promise.allSettled(connectionPromises);
+            console.log("🚀 MCP Client initialized with tools:", this.tools.map(({ name }) => name));
+            console.log("📊 Connected servers:", Array.from(this.servers.entries())
+                .filter(([_, config]) => config.isConnected)
+                .map(([name]) => name));
         }
         catch (e) {
-            console.log("Failed to connect to MCP server: ", e);
+            console.log("Failed to connect to MCP servers: ", e);
             throw e;
         }
     }
+    // Method to get the appropriate client for a tool
+    getClientForTool(toolName) {
+        const serverName = this.toolToServerMap.get(toolName);
+        if (!serverName) {
+            // Fallback: try to match by prefix
+            for (const [name, config] of this.servers.entries()) {
+                if (config.toolPrefix && toolName.startsWith(config.toolPrefix)) {
+                    return config.client;
+                }
+            }
+            throw new Error(`No server found for tool: ${toolName}`);
+        }
+        const server = this.servers.get(serverName);
+        if (!server || !server.isConnected) {
+            throw new Error(`Server ${serverName} is not connected for tool: ${toolName}`);
+        }
+        return server.client;
+    }
     async processQuery(query) {
-        /**
-         * Process a query using Claude and available tools
-         * @param {string} query - The user query to process
-         * @returns {Promise<string>} - The final response text
-         */
         let messages = [
             {
                 role: "user",
@@ -107,10 +197,8 @@ class MCPClient {
             }
         ];
         const finalText = [];
-        // Continue processing until we get a final text response without tool calls
         while (true) {
             console.log("Sending messages to Claude:", messages);
-            // Get response from Claude
             let response = await this.llm.messages.create({
                 model: "claude-sonnet-4-20250514",
                 max_tokens: 2048,
@@ -119,10 +207,8 @@ class MCPClient {
                 tools: this.tools
             });
             console.log("Claude response:", response);
-            // Build assistant message content for the conversation history
             const assistantContent = [];
             let hasToolCalls = false;
-            // Process each content block in the response
             for (const content of response.content) {
                 assistantContent.push(content);
                 if (content.type === 'text') {
@@ -135,18 +221,18 @@ class MCPClient {
                     const toolArgs = content.input;
                     console.log(`Executing tool: ${toolName} with args:`, toolArgs);
                     try {
-                        // Execute tool call
-                        const result = await this.lauraMcp.callTool({
+                        // Get the appropriate client for this tool
+                        const client = this.getClientForTool(toolName);
+                        // Execute tool call on the correct client
+                        const result = await client.callTool({
                             name: toolName,
                             arguments: toolArgs
                         });
                         console.log("Tool result:", result);
-                        // Add assistant message to conversation history
                         messages.push({
                             role: "assistant",
                             content: assistantContent
                         });
-                        // Add tool result to conversation history
                         messages.push({
                             role: "user",
                             content: [
@@ -160,12 +246,10 @@ class MCPClient {
                     }
                     catch (error) {
                         console.error("Tool execution error:", error);
-                        // Add assistant message to conversation history
                         messages.push({
                             role: "assistant",
                             content: assistantContent
                         });
-                        // Add error result to conversation history
                         messages.push({
                             role: "user",
                             content: [
@@ -178,12 +262,10 @@ class MCPClient {
                             ]
                         });
                     }
-                    break; // Process one tool call at a time
+                    break;
                 }
             }
-            // If no tool calls were made, we're done
             if (!hasToolCalls) {
-                // Add the final assistant message to history
                 messages.push({
                     role: "assistant",
                     content: assistantContent
@@ -193,9 +275,39 @@ class MCPClient {
         }
         return finalText.join("\n");
     }
+    // Method to check server status
+    getServerStatus() {
+        const status = {};
+        this.servers.forEach((config, name) => {
+            status[name] = config.isConnected;
+        });
+        return status;
+    }
+    // Method to get tools by server
+    getToolsByServer() {
+        const toolsByServer = {};
+        this.toolToServerMap.forEach((serverName, toolName) => {
+            if (!toolsByServer[serverName]) {
+                toolsByServer[serverName] = [];
+            }
+            toolsByServer[serverName].push(toolName);
+        });
+        return toolsByServer;
+    }
     async cleanup() {
-        await this.lauraMcp.close();
-        await this.notionMcp.close();
+        const cleanupPromises = Array.from(this.servers.values()).map(async (config) => {
+            if (config.isConnected) {
+                try {
+                    await config.client.close();
+                    config.isConnected = false;
+                }
+                catch (error) {
+                    console.error(`Error closing ${config.name}:`, error);
+                }
+            }
+        });
+        await Promise.allSettled(cleanupPromises);
+        console.log("🧹 All MCP clients cleaned up");
     }
 }
 const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
@@ -250,6 +362,30 @@ function showAuthUrl() {
     console.error(`   npx ts-node src/auth-helper.js "PASTE_AUTH_CODE_HERE"\n`);
     return authUrl;
 }
+// async function example() {
+//     const mcpClient = new MCPClient();
+//     // You can easily add new servers
+//     mcpClient.addServer('slack', {
+//         client: new Client({ name: "slack-mcp", version: "1.0.0" }, { capabilities: { tools: {} } }),
+//         connection: {
+//             command: "npx",
+//             args: ["-y", "@slack/mcp-server"],
+//             env: {
+//                 "SLACK_BOT_TOKEN": process.env.SLACK_BOT_TOKEN || "",
+//             }
+//         },
+//         toolPrefix: 'slack-mcp:'
+//     });
+//     // Connect to servers
+//     await mcpClient.connectToServer("path/to/laura-server.js");
+//     // Check status
+//     console.log("Server status:", mcpClient.getServerStatus());
+//     console.log("Tools by server:", mcpClient.getToolsByServer());
+//     // Process queries
+//     const response = await mcpClient.processQuery("List my events for today");
+//     // Cleanup
+//     await mcpClient.cleanup();
+// }
 async function main() {
     const app = express();
     const port = process.env.PORT || 3000;
@@ -260,8 +396,10 @@ async function main() {
     const mcpClient = new MCPClient();
     try {
         await mcpClient.connectToServer("./build/index.js");
-        console.log("MCP Client connected to server");
-        console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
+        // console.log("MCP Client connected to server");
+        // console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
+        console.log("Server status:", mcpClient.getServerStatus());
+        console.log("Tools by server:", mcpClient.getToolsByServer());
         // Health check endpoint
         const healthCheck = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
