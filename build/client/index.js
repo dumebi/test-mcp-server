@@ -201,7 +201,8 @@ class MCPClient {
             console.log("Sending messages to Claude:", messages);
             let response = await this.llm.messages.create({
                 model: "claude-sonnet-4-20250514",
-                max_tokens: 2048,
+                max_tokens: 1000,
+                stream: false,
                 messages: messages,
                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
                 tools: this.tools

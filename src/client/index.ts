@@ -437,10 +437,10 @@ class MCPClient {
 
             await Promise.allSettled(connectionPromises);
 
-            console.log(
-                "🚀 MCP Client initialized with tools:",
-                this.tools.map(({ name }) => name)
-            );
+            // console.log(
+            //     "🚀 MCP Client initialized with tools:",
+            //     this.tools.map(({ name }) => name)
+            // );
             
             console.log(
                 "📊 Connected servers:",
@@ -492,7 +492,8 @@ class MCPClient {
             
             let response = await this.llm.messages.create({
                 model: "claude-sonnet-4-20250514",
-                max_tokens: 2048,
+                max_tokens: 1000,
+                stream: false,
                 messages: messages,
                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
                 tools: this.tools
@@ -723,7 +724,7 @@ async function main() {
         // console.log("MCP Client connected to server");
         // console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
         console.log("Server status:", mcpClient.getServerStatus());
-        console.log("Tools by server:", mcpClient.getToolsByServer());
+        // console.log("Tools by server:", mcpClient.getToolsByServer());
         // Health check endpoint
         const healthCheck: RequestHandler = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
