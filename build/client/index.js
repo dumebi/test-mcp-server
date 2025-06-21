@@ -69,15 +69,18 @@ class MCPClient {
             this.notionTransport = new StdioClientTransport({
                 command: "npx",
                 args: ["-y", "@notionhq/notion-mcp-server"],
+                env: {
+                    "OPENAPI_MCP_HEADERS": process.env.OPENAPI_MCP_HEADERS || "",
+                },
             });
-            await this.notionMcp.connect(this.notionTransport);
+            // await this.notionMcp.connect(this.notionTransport);
             await this.lauraMcp.connect(this.lauraTransport);
-            const [notionMcpToolsResult, lauraMcpToolsResult] = await Promise.all([
-                this.notionMcp.listTools(),
+            const [lauraTransport] = await Promise.all([
+                // this.notionMcp.listTools(),
                 this.lauraMcp.listTools()
             ]);
-            console.log({ notionMcpToolsResult, lauraMcpToolsResult });
-            [...notionMcpToolsResult.tools, ...lauraMcpToolsResult.tools].map((tool) => {
+            // console.log({notionMcpToolsResult, lauraMcpToolsResult});
+            [...lauraTransport.tools].map((tool) => {
                 this.tools.push({
                     name: tool.name,
                     description: tool.description,
@@ -92,48 +95,131 @@ class MCPClient {
         }
     }
     async processQuery(query) {
-        const messages = [
+        /**
+         * Process a query using Claude and available tools
+         * @param {string} query - The user query to process
+         * @returns {Promise<string>} - The final response text
+         */
+        let messages = [
             {
                 role: "user",
-                content: query,
-            },
-        ];
-        const response = await this.llm.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1000,
-            messages,
-            tools: this.tools,
-        });
-        const finalText = [];
-        const toolResults = [];
-        for (const content of response.content) {
-            if (content.type === "text") {
-                finalText.push(content.text);
+                content: query
             }
-            else if (content.type === "tool_use") {
-                console.log("Tool use detected:", content);
-                const toolName = content.name;
-                const toolArgs = content.input;
-                const result = await this.lauraMcp.callTool({
-                    name: toolName,
-                    arguments: toolArgs,
-                });
-                toolResults.push(result);
-                finalText.push(`[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`);
-                messages.push({
-                    role: "user",
-                    content: result.content,
-                });
-                const response = await this.llm.messages.create({
-                    model: "claude-3-5-sonnet-20241022",
-                    max_tokens: 1000,
-                    messages,
-                });
-                finalText.push(response.content[0].type === "text" ? response.content[0].text : "");
+        ];
+        // // Get available tools
+        // const toolsResponse = await this.session.listTools();
+        // const availableTools = toolsResponse.tools.map(tool => ({
+        //     name: tool.name,
+        //     description: tool.description,
+        //     input_schema: tool.inputSchema
+        // }));
+        // Initial Claude API call
+        let response = await this.llm.messages.create({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 2048,
+            messages: messages,
+            system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity. use system time for any date query",
+            tools: this.tools
+        });
+        console.log("Initial response:", response);
+        // Process response and handle tool calls
+        const finalText = [];
+        const assistantMessageContent = [];
+        for (const content of response.content) {
+            if (content.type === 'text') {
+                console.log({ content });
+                finalText.push(content.text);
+                // assistantMessageContent.push(content);
+            }
+            else if (content.type === 'tool_use') {
+                while (response.content[response.content.length - 1].type !== 'text') {
+                    const toolName = content.name;
+                    const toolArgs = content.input;
+                    ;
+                    // Execute tool call
+                    const result = await this.lauraMcp.callTool({
+                        name: toolName,
+                        arguments: toolArgs
+                    });
+                    console.log("Tool result:", result);
+                    // finalText.push(`[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`);
+                    // assistantMessageContent.push(content);
+                    // messages.push({
+                    //     role: "assistant",
+                    //     content: content.text || "",
+                    // });
+                    messages.push({
+                        role: "user",
+                        content: result.content
+                    });
+                    // Get next response from Claude
+                    response = await this.llm.messages.create({
+                        model: "claude-sonnet-4-20250514",
+                        max_tokens: 2048,
+                        messages: messages,
+                        system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity. use system time for any date query",
+                        tools: this.tools
+                    });
+                    if (response.content[0].type === 'text') {
+                        finalText.push(response.content[0].text);
+                    }
+                }
             }
         }
         return finalText.join("\n");
     }
+    // async processQuery(query: string) {
+    //     const messages: MessageParam[] = [
+    //         {
+    //             role: "user",
+    //             content: query,
+    //         },
+    //     ];
+    //     console.log("Processing query:", query);
+    //     // console.log({tools: this.tools})
+    //     const response = await this.llm.messages.create({
+    //         model: "claude-3-7-sonnet-latest",
+    //         max_tokens: 2048,
+    //         messages,
+    //         system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity.",
+    //         tools: this.tools,
+    //     });
+    //     const finalText = [];
+    //     const toolResults = [];
+    //     for (const content of response.content) {
+    //         if (content.type === "text") {
+    //             finalText.push(content.text);
+    //         } else if (content.type === "tool_use") {
+    //             console.log("Tool use detected:", content);
+    //             const toolName = content.name;
+    //             const toolArgs = content.input as { [x: string]: unknown } | undefined;
+    //             const result = await this.lauraMcp.callTool({
+    //                 name: toolName,
+    //                 arguments: toolArgs,
+    //             });
+    //             toolResults.push(result);
+    //             console.log("Tool result:", result);
+    //             // finalText.push(
+    //             //     `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
+    //             // );
+    //             messages.push({
+    //                 role: "user",
+    //                 content: result.content as string,
+    //             });
+    //             const response = await this.llm.completions.create({
+    //                 model: "claude-3-7-sonnet-latest",
+    //                 max_tokens: 2048,
+    //                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity.",
+    //                 messages,
+    //                 tools: this.tools,
+    //             });
+    //             finalText.push(
+    //                 response.content[0].type === "text" ? response.content[0].text : ""
+    //             );
+    //         }
+    //     }
+    //     return finalText.join("\n");
+    // }
     async cleanup() {
         await this.lauraMcp.close();
         await this.notionMcp.close();
