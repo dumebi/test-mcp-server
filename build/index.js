@@ -40,10 +40,10 @@ const timeProvider = new TimeProvider();
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     debugLog('List tools request received');
     return { tools: [
-            // ...gmailProvider.getToolDefinitions(), 
+            ...gmailProvider.getToolDefinitions(),
             ...calendarProvider.getToolDefinitions(),
             ...contactsProvider.getToolDefinitions(),
-            // ...timeProvider.getToolDefinitions()
+            ...timeProvider.getToolDefinitions()
         ] };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -107,12 +107,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             case 'contacts_getContact':
                 result = await contactsProvider.getContact(args, GOOGLE_REFRESH_TOKEN);
                 break;
-            // case 'get_current_date':
-            //   result = await timeProvider.getCurrentDate(args);
-            //   break;
-            // case 'resolveTimeDesc':
-            //   result = await timeProvider.resolveTimeDesc(args);
-            //   break;
+            case 'get_current_time':
+                result = await timeProvider.get_current_time(args);
+                break;
+            case 'convert_time':
+                result = await timeProvider.convert_time(args);
+                break;
             default:
                 return {
                     content: [{ type: "text", text: JSON.stringify(`Unknown tool: ${name}`) }],

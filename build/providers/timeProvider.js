@@ -1,77 +1,69 @@
-import * as chrono from "chrono-node";
-import { addDays } from "date-fns/addDays";
-import { addMonths } from "date-fns/addMonths";
-import { subDays } from "date-fns/subDays";
 import * as dotenv from 'dotenv';
+import { DateTime, Settings, IANAZone } from 'luxon';
 // Load environment variables
 dotenv.config();
-export class TimeRange {
-    range;
-    constructor(range) {
-        this.range = range;
+function getLocalTimezone() {
+    // Luxon gets the local system timezone
+    return Settings.defaultZone.name;
+}
+// Helper to validate IANA timezone names (basic check)
+function isValidTimezone(tz) {
+    // Use Luxon's built-in validator
+    return IANAZone.isValidZone(tz);
+}
+function getCurrentTime(timezoneName) {
+    if (!isValidTimezone(timezoneName)) {
+        throw new Error(`Invalid timezone: ${timezoneName}`);
     }
-    static parse = (range) => {
-        if (typeof range === "object") {
-            range = range.time_range;
-        }
-        if (!range) {
-            return undefined;
-        }
-        const parsed = chrono.parse(range);
-        const [chronoRange] = parsed;
-        if (!chronoRange) {
-            return undefined;
-        }
-        return new TimeRange(chronoRange);
-    };
-    get hasAfter() {
-        return !!this.getAfter({});
-    }
-    /**
-     * Gets after date in ISO format.
-     * @param {ITimeBoundOptions} [options] - Options for time bound calculation
-     * @returns {string|undefined}
-     */
-    getAfter = (options) => {
-        if (!this.range.start) {
-            return undefined;
-        }
-        let after = this.range.start.date();
-        if (this.range.start.isCertain("hour") && !options?.ignoreTime) {
-            return after.toISOString();
-        }
-        if (options?.exclusive) {
-            after = subDays(after, 1);
-        }
-        return after.toISOString().split("T")[0];
-    };
-    get hasBefore() {
-        return !!this.getBefore({});
-    }
-    /**
-     * Gets the before date in ISO format.
-     * @param {ITimeBoundOptions} [options] - Options for time bound calculation
-     * @returns {string|undefined}
-     */
-    getBefore = (options) => {
-        let before = this.range.end?.date();
-        if (!before &&
-            this.range.start?.isCertain("month") &&
-            !this.range.start.isCertain("day")) {
-            before = subDays(addMonths(this.range.start.date(), 1), 1);
-        }
-        if (!before) {
-            return undefined;
-        }
-        if (this.range.end?.isCertain("hour") && !options?.ignoreTime) {
-            return before.toISOString();
-        }
-        if (options?.exclusive) {
-            before = addDays(before, 1);
-        }
-        return before.toISOString().split("T")[0];
+    const nowInZone = DateTime.now().setZone(timezoneName);
+    return {
+        timezone: timezoneName,
+        datetime: nowInZone.toISO({ includeOffset: true, suppressMilliseconds: true }) ?? 'Invalid Date',
     };
 }
+function convertTime(sourceTz, timeStr, targetTz) {
+    if (!isValidTimezone(sourceTz)) {
+        throw new Error(`Invalid source timezone: ${sourceTz}`);
+    }
+    if (!isValidTimezone(targetTz)) {
+        throw new Error(`Invalid target timezone: ${targetTz}`);
+    }
+    // Parse time string (HH:mm) using Luxon
+    const parsedTime = DateTime.fromFormat(timeStr, 'HH:mm');
+    if (!parsedTime.isValid) {
+        throw new Error("Invalid time format. Expected HH:MM [24-hour format]");
+    }
+    // Create DateTime object for source time today in the source timezone
+    const sourceDt = DateTime.now()
+        .setZone(sourceTz)
+        .set({ hour: parsedTime.hour, minute: parsedTime.minute, second: 0, millisecond: 0 });
+    // Convert to the target timezone
+    const targetDt = sourceDt.setZone(targetTz);
+    // Calculate time difference
+    // Luxon handles offsets directly. Get difference in minutes and format.
+    const offsetDiffMinutes = targetDt.offset - sourceDt.offset;
+    const offsetDiffHours = offsetDiffMinutes / 60;
+    let timeDiffStr;
+    if (Number.isInteger(offsetDiffHours)) {
+        timeDiffStr = `${offsetDiffHours >= 0 ? '+' : ''}${offsetDiffHours}h`;
+    }
+    else {
+        // Format fractional hours (e.g., +5.75h for +5:45)
+        timeDiffStr = `${offsetDiffHours >= 0 ? '+' : ''}${offsetDiffHours.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')}h`;
+    }
+    return {
+        source: {
+            timezone: sourceTz,
+            datetime: sourceDt.toISO({ includeOffset: true, suppressMilliseconds: true }) ?? 'Invalid Date',
+        },
+        target: {
+            timezone: targetTz,
+            datetime: targetDt.toISO({ includeOffset: true, suppressMilliseconds: true }) ?? 'Invalid Date',
+        },
+        time_difference: timeDiffStr,
+    };
+}
+const localTz = getLocalTimezone();
 export class TimeProvider {
     /**
      * Get the tool definitions
@@ -79,41 +71,52 @@ export class TimeProvider {
     getToolDefinitions() {
         return [
             {
-                name: 'get_current_date',
+                name: 'get_current_time',
                 description: 'Get the current date',
                 inputSchema: {
                     type: "object",
                     properties: {
-                        time_zone: {
+                        timezone: {
                             type: 'string',
-                            description: 'The time zone to use for the current time. If not provided, will use the system time zone.',
-                            default: 'UTC',
+                            description: `IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to server local: ${localTz}`
                         }
                     },
                 },
             },
-            // {
-            //   name: 'resolve_time_description',
-            //   description: 'Resolve a timestamp or time range from natural language time description',
-            //   inputSchema: {
-            //     type: "object",
-            //     properties: {
-            //       time_range: {
-            //         type: 'string',
-            //         description: 'Text describing the date range to search within, which will be parsed by chrono-node. e.g. "last week", "yesterday", "17 Aug - 19 Aug", etc. If not provided, will search from the beginning of time.',
-            //       },
-            //     },
-            //   },
-            // }
+            {
+                name: 'convert_time',
+                description: 'convert time from one timezone to another',
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        source_timezone: {
+                            type: 'string',
+                            description: `Source IANA timezone name. Defaults to server local: ${localTz}`,
+                        },
+                        time: {
+                            type: 'string',
+                            description: `Time to convert (HH:MM)"`,
+                            regex: '/^\d{2}:\d{2}$/',
+                        },
+                        target_timezone: {
+                            type: 'string',
+                            description: `Target IANA timezone name. Defaults to server local: ${localTz}`,
+                        },
+                    },
+                    required: ['time'],
+                },
+            }
         ];
     }
     /**
      * List all available calendars
      */
-    async getCurrentDate(parameters) {
+    async get_current_time(parameters) {
+        const effectiveTimezone = parameters.timezone || localTz;
+        console.log(`[Server] Handling tool call: get_current_time for timezone='${effectiveTimezone}'`); // Log effective TZ
         try {
-            const now = parameters.time_zone ? new Date().toLocaleString("en-US", { timeZone: parameters.time_zone }) : new Date();
-            return { date: now };
+            const result = getCurrentTime(effectiveTimezone);
+            return result;
         }
         catch (error) {
             return error instanceof Error ? error.message : String(error);
@@ -122,15 +125,13 @@ export class TimeProvider {
     /**
      * List events in a calendar
      */
-    async resolveTimeDesc(parameters) {
+    async convert_time(parameters) {
+        const effectiveSourceTz = parameters.source_timezone || localTz;
+        const effectiveTargetTz = parameters.target_timezone || localTz;
         try {
-            const timeRange = TimeRange.parse(parameters);
-            if (!timeRange) {
-                return parameters.time_range
-                    ? "Invalid time range"
-                    : "No time range provided";
-            }
-            return { after: timeRange.getAfter(parameters), before: timeRange.getBefore(parameters) };
+            const result = convertTime(effectiveSourceTz, parameters.time, effectiveTargetTz);
+            // Return result as JSON string in text content
+            return result;
         }
         catch (error) {
             return error instanceof Error ? error.message : String(error);

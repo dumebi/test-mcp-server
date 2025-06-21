@@ -106,120 +106,93 @@ class MCPClient {
                 content: query
             }
         ];
-        // // Get available tools
-        // const toolsResponse = await this.session.listTools();
-        // const availableTools = toolsResponse.tools.map(tool => ({
-        //     name: tool.name,
-        //     description: tool.description,
-        //     input_schema: tool.inputSchema
-        // }));
-        // Initial Claude API call
-        let response = await this.llm.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 2048,
-            messages: messages,
-            system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity. use system time for any date query",
-            tools: this.tools
-        });
-        console.log("Initial response:", response);
-        // Process response and handle tool calls
         const finalText = [];
-        const assistantMessageContent = [];
-        for (const content of response.content) {
-            if (content.type === 'text') {
-                console.log({ content });
-                finalText.push(content.text);
-                // assistantMessageContent.push(content);
-            }
-            else if (content.type === 'tool_use') {
-                while (response.content[response.content.length - 1].type !== 'text') {
+        // Continue processing until we get a final text response without tool calls
+        while (true) {
+            console.log("Sending messages to Claude:", messages);
+            // Get response from Claude
+            let response = await this.llm.messages.create({
+                model: "claude-sonnet-4-20250514",
+                max_tokens: 2048,
+                messages: messages,
+                system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
+                tools: this.tools
+            });
+            console.log("Claude response:", response);
+            // Build assistant message content for the conversation history
+            const assistantContent = [];
+            let hasToolCalls = false;
+            // Process each content block in the response
+            for (const content of response.content) {
+                assistantContent.push(content);
+                if (content.type === 'text') {
+                    console.log("Text content:", content.text);
+                    finalText.push(content.text);
+                }
+                else if (content.type === 'tool_use') {
+                    hasToolCalls = true;
                     const toolName = content.name;
                     const toolArgs = content.input;
-                    ;
-                    // Execute tool call
-                    const result = await this.lauraMcp.callTool({
-                        name: toolName,
-                        arguments: toolArgs
-                    });
-                    console.log("Tool result:", result);
-                    // finalText.push(`[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`);
-                    // assistantMessageContent.push(content);
-                    // messages.push({
-                    //     role: "assistant",
-                    //     content: content.text || "",
-                    // });
-                    messages.push({
-                        role: "user",
-                        content: result.content
-                    });
-                    // Get next response from Claude
-                    response = await this.llm.messages.create({
-                        model: "claude-sonnet-4-20250514",
-                        max_tokens: 2048,
-                        messages: messages,
-                        system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity. use system time for any date query",
-                        tools: this.tools
-                    });
-                    if (response.content[0].type === 'text') {
-                        finalText.push(response.content[0].text);
+                    console.log(`Executing tool: ${toolName} with args:`, toolArgs);
+                    try {
+                        // Execute tool call
+                        const result = await this.lauraMcp.callTool({
+                            name: toolName,
+                            arguments: toolArgs
+                        });
+                        console.log("Tool result:", result);
+                        // Add assistant message to conversation history
+                        messages.push({
+                            role: "assistant",
+                            content: assistantContent
+                        });
+                        // Add tool result to conversation history
+                        messages.push({
+                            role: "user",
+                            content: [
+                                {
+                                    type: "tool_result",
+                                    tool_use_id: content.id,
+                                    content: result.content
+                                }
+                            ]
+                        });
                     }
+                    catch (error) {
+                        console.error("Tool execution error:", error);
+                        // Add assistant message to conversation history
+                        messages.push({
+                            role: "assistant",
+                            content: assistantContent
+                        });
+                        // Add error result to conversation history
+                        messages.push({
+                            role: "user",
+                            content: [
+                                {
+                                    type: "tool_result",
+                                    tool_use_id: content.id,
+                                    content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
+                                    is_error: true
+                                }
+                            ]
+                        });
+                    }
+                    break; // Process one tool call at a time
                 }
+            }
+            // If no tool calls were made, we're done
+            if (!hasToolCalls) {
+                // Add the final assistant message to history
+                messages.push({
+                    role: "assistant",
+                    content: assistantContent
+                });
+                break;
             }
         }
         return finalText.join("\n");
     }
-    // async processQuery(query: string) {
-    //     const messages: MessageParam[] = [
-    //         {
-    //             role: "user",
-    //             content: query,
-    //         },
-    //     ];
-    //     console.log("Processing query:", query);
-    //     // console.log({tools: this.tools})
-    //     const response = await this.llm.messages.create({
-    //         model: "claude-3-7-sonnet-latest",
-    //         max_tokens: 2048,
-    //         messages,
-    //         system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity.",
-    //         tools: this.tools,
-    //     });
-    //     const finalText = [];
-    //     const toolResults = [];
-    //     for (const content of response.content) {
-    //         if (content.type === "text") {
-    //             finalText.push(content.text);
-    //         } else if (content.type === "tool_use") {
-    //             console.log("Tool use detected:", content);
-    //             const toolName = content.name;
-    //             const toolArgs = content.input as { [x: string]: unknown } | undefined;
-    //             const result = await this.lauraMcp.callTool({
-    //                 name: toolName,
-    //                 arguments: toolArgs,
-    //             });
-    //             toolResults.push(result);
-    //             console.log("Tool result:", result);
-    //             // finalText.push(
-    //             //     `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`
-    //             // );
-    //             messages.push({
-    //                 role: "user",
-    //                 content: result.content as string,
-    //             });
-    //             const response = await this.llm.completions.create({
-    //                 model: "claude-3-7-sonnet-latest",
-    //                 max_tokens: 2048,
-    //                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, askfor clarity.",
-    //                 messages,
-    //                 tools: this.tools,
-    //             });
-    //             finalText.push(
-    //                 response.content[0].type === "text" ? response.content[0].text : ""
-    //             );
-    //         }
-    //     }
-    //     return finalText.join("\n");
-    // }
     async cleanup() {
         await this.lauraMcp.close();
         await this.notionMcp.close();

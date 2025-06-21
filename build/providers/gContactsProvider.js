@@ -73,11 +73,6 @@ export class GoogleContactsProvider {
                             type: 'number',
                             description: 'Maximum number of results to return (default: 10)',
                         },
-                        readMask: {
-                            type: 'string',
-                            description: 'Comma-separated list of fields to include for each contact (default: "names,emailAddresses,phoneNumbers")',
-                            default: 'names,emailAddresses,phoneNumbers',
-                        },
                     },
                 },
             },
@@ -95,11 +90,6 @@ export class GoogleContactsProvider {
                             type: 'number',
                             description: 'Maximum number of results to return (default: 10)',
                         },
-                        readMask: {
-                            type: 'string',
-                            description: 'Comma-separated list of fields to include for each contact (default: "names,emailAddresses,phoneNumbers")',
-                            default: 'names,emailAddresses,phoneNumbers',
-                        },
                     },
                     required: ['query'],
                 },
@@ -114,11 +104,6 @@ export class GoogleContactsProvider {
                             type: 'string',
                             description: 'The resource name of the contact (e.g., "people/c123456789")',
                         },
-                        readMask: {
-                            type: 'string',
-                            description: 'Comma-separated list of fields to include',
-                            default: 'names,emailAddresses,phoneNumbers,photos,addresses,birthdays,organizations',
-                        }
                     },
                     required: ['resourceName'],
                 },
@@ -137,12 +122,12 @@ export class GoogleContactsProvider {
         });
         // Initialize the people client
         this.people = google.people({ version: "v1", auth: this.auth });
-        const { pageSize, readMask } = parameters;
+        const { pageSize } = parameters;
         try {
             const response = await this.people.people.connections.list({
                 resourceName: "people/me",
                 pageSize,
-                personFields: readMask,
+                personFields: 'names,emailAddresses,phoneNumbers', // Specify the fields you want
                 // Add sortOrder if needed: people.connections.list({ sortOrder: 'LAST_MODIFIED_ASCENDING' })
             });
             // const connections = response.data.connections;
@@ -172,14 +157,14 @@ export class GoogleContactsProvider {
         });
         // Initialize the people client
         this.people = google.people({ version: "v1", auth: this.auth });
-        const { query, pageSize, readMask } = parameters;
+        const { query, pageSize } = parameters;
         // let files: string[] = [];
         try {
             const response = await this.people.people.searchContacts({
                 // Corrected API endpoint
                 query,
                 pageSize,
-                readMask,
+                readMask: 'names,emailAddresses,phoneNumbers', // Specify the fields you want
             });
             // const results = response.data.results;
             // if (!results || results.length === 0) {
@@ -221,14 +206,14 @@ export class GoogleContactsProvider {
         });
         // Initialize the people client
         this.people = google.people({ version: "v1", auth: this.auth });
-        const { resourceName, readMask } = parameters;
+        const { resourceName } = parameters;
         try {
             const response = await this.people.people.get({
                 resourceName,
-                personFields: readMask,
+                personFields: 'names,emailAddresses,phoneNumbers,birthdays,addresses,organizations,biographies', // Specify the fields you want
             });
             // const person = response.data;
-            // // Format the output nicely
+            // // Format the output re
             // const details = {
             //   resourceName: person.resourceName,
             //   names: person.names,
@@ -238,7 +223,6 @@ export class GoogleContactsProvider {
             //   addresses: person.addresses,
             //   organizations: person.organizations,
             //   biographies: person.biographies,
-            //   // Add other fields from readMask as needed
             // };
             return response;
         }

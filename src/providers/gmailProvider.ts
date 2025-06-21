@@ -152,10 +152,10 @@ export class GmailProvider {
             isHtml: {
               type: 'boolean',
               description: 'Whether the email body is HTML (default: false)',
-              default: false,
             },
           },
           required: ['to', 'subject', 'body'],
+          additionalProperties: false,
         },
       },
       {
@@ -199,10 +199,10 @@ export class GmailProvider {
             isHtml: {
               type: 'boolean',
               description: 'Whether the email body is HTML (default: false)',
-              default: false,
             },
           },
           required: ['to', 'subject', 'body'],
+          additionalProperties: false,
         },
       },
       {
@@ -220,11 +220,15 @@ export class GmailProvider {
               description: 'Maximum number of results to return (default: 10)',
             },
             labelIds: {
-              type: 'string',
+              type: 'array',
               description: 'List of label IDs to filter by (e.g., ["INBOX", "UNREAD"])',
+              items: {
+                type: 'string'
+              },
             },
           },
           required: [],
+          additionalProperties: false,
         },
       },
       {
@@ -238,13 +242,13 @@ export class GmailProvider {
               description: 'The ID of the email message to retrieve',
             },
             format: {
-              type: 'emum',
+              type: 'string',
               enum: ['full', 'metadata', 'minimal', 'raw'],
               description: 'Format of the email content to retrieve (default: full)',
-              default: 'full',
             },
           },
-          required: ['eventId'],
+          required: ['messageId'],
+          additionalProperties: false,
         },
       },
       {
@@ -260,10 +264,10 @@ export class GmailProvider {
             permanently: {
               type: 'boolean',
               description: 'Whether to permanently delete the email (default: false, moves to trash)',
-              default: false,
             }
           },
           required: ['messageId'],
+          additionalProperties: false,
         },
       },
       {
@@ -274,18 +278,25 @@ export class GmailProvider {
           properties: {
             messageId: {
               type: 'string',
-              description: 'The ID of the email message to delete',
+              description: 'The ID of the email message to modify',
             },
             addLabelIds: {
               type: 'array',
               description: 'List of label IDs to add (e.g., ["UNREAD", "IMPORTANT"])',
+              items: {
+                type: 'string'
+              },
             },
             removeLabelIds: {
               type: 'array',
               description: 'List of label IDs to remove (e.g., ["UNREAD", "IMPORTANT"])',
+              items: {
+                type: 'string'
+              },
             }
           },
           required: ['messageId'],
+          additionalProperties: false,
         },
       },
     ];
