@@ -4,6 +4,7 @@ import { Anthropic } from "@anthropic-ai/sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { google } from 'googleapis';
+import { v4 as uuidv4 } from 'uuid';
 // Express
 import express from "express";
 import cors from "cors";
@@ -24,12 +25,51 @@ class MCPClient {
     servers = new Map();
     toolToServerMap = new Map(); // Maps tool name to server name
     tools = [];
+    sessionsFilePath;
     constructor() {
         this.llm = new Anthropic({
             apiKey: ANTHROPIC_API_KEY,
         });
         // Initialize server configurations
         this.initializeServers();
+        this.sessionsFilePath = path.join(process.cwd(), 'sessions.json');
+        this.initializeSessionsFile();
+    }
+    async initializeSessionsFile() {
+        try {
+            await fs.accessSync(this.sessionsFilePath);
+        }
+        catch {
+            // File doesn't exist, create it
+            await fs.writeFileSync(this.sessionsFilePath, '{}', 'utf8');
+        }
+    }
+    async loadSessions() {
+        try {
+            const data = await fs.readFileSync(this.sessionsFilePath, 'utf8');
+            return JSON.parse(data);
+        }
+        catch (error) {
+            console.error('Error loading sessions:', error);
+            return {};
+        }
+    }
+    async saveSessions(sessions) {
+        try {
+            await fs.writeFileSync(this.sessionsFilePath, JSON.stringify(sessions, null, 2), 'utf8');
+        }
+        catch (error) {
+            console.error('Error saving sessions:', error);
+        }
+    }
+    async getSessionMessages(sessionId) {
+        const sessions = await this.loadSessions();
+        return sessions[sessionId] || [];
+    }
+    async updateSessionMessages(sessionId, messages) {
+        const sessions = await this.loadSessions();
+        sessions[sessionId] = messages;
+        await this.saveSessions(sessions);
     }
     initializeServers() {
         // Laura Google MCP Server
@@ -192,25 +232,118 @@ class MCPClient {
         }
         return server.client;
     }
-    async processQuery(query) {
-        let messages = [
-            {
-                role: "user",
-                content: query
-            }
-        ];
+    // async processQuery(query: string) {
+    //     let messages: MessageParam[] = [
+    //         {
+    //             role: "user",
+    //             content: query
+    //         }
+    //     ];
+    //     const finalText: string[] = [];
+    //     while (true) {
+    //         console.log("Sending messages to Claude:", messages);
+    //         let response = await this.llm.messages.create({
+    //             model: "claude-3-7-sonnet-latest",
+    //             max_tokens: 1000,
+    //             stream: false,
+    //             messages: messages,
+    //             system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
+    //             tools: this.tools
+    //         });
+    //         // console.log("Claude response:", response);
+    //         const assistantContent = [];
+    //         let hasToolCalls = false;
+    //         for (const content of response.content) {
+    //             assistantContent.push(content);
+    //             if (content.type === 'text') {
+    //                 console.log("Text content:", content.text);
+    //                 finalText.push(content.text);
+    //             } else if (content.type === 'tool_use') {
+    //                 hasToolCalls = true;
+    //                 const toolName = content.name;
+    //                 const toolArgs = content.input as { [x: string]: unknown };
+    //                 // console.log(`Executing tool: ${toolName} with args:`, toolArgs);
+    //                 try {
+    //                     // Get the appropriate client for this tool
+    //                     const client = this.getClientForTool(toolName);
+    //                     // Execute tool call on the correct client
+    //                     const result = await client.callTool({
+    //                         name: toolName,
+    //                         arguments: toolArgs
+    //                     });
+    //                     console.log("Tool result:", result);
+    //                     messages.push({
+    //                         role: "assistant",
+    //                         content: assistantContent
+    //                     });
+    //                     messages.push({
+    //                         role: "user",
+    //                         content: [
+    //                             {
+    //                                 type: "tool_result",
+    //                                 tool_use_id: content.id,
+    //                                 content: result.content as string
+    //                             }
+    //                         ]
+    //                     });
+    //                 } catch (error) {
+    //                     console.error("Tool execution error:", error);
+    //                     messages.push({
+    //                         role: "assistant", 
+    //                         content: assistantContent
+    //                     });
+    //                     messages.push({
+    //                         role: "user",
+    //                         content: [
+    //                             {
+    //                                 type: "tool_result",
+    //                                 tool_use_id: content.id,
+    //                                 content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
+    //                                 is_error: true
+    //                             }
+    //                         ]
+    //                     });
+    //                 }
+    //                 break;
+    //             }
+    //         }
+    //         if (!hasToolCalls) {
+    //             messages.push({
+    //                 role: "assistant",
+    //                 content: assistantContent
+    //             });
+    //             break;
+    //         }
+    //     }
+    //     return finalText.join("\n");
+    // }
+    async processQuery(query, sessionId) {
+        // Generate new session ID if not provided
+        if (!sessionId) {
+            sessionId = uuidv4();
+            console.log(`Created new session: ${sessionId}`);
+        }
+        else {
+            console.log(`Using existing session: ${sessionId}`);
+        }
+        // Load existing messages for this session or start fresh
+        let messages = await this.getSessionMessages(sessionId);
+        // Add the new user query
+        messages.push({
+            role: "user",
+            content: query
+        });
         const finalText = [];
         while (true) {
-            console.log("Sending messages to Claude:", messages);
+            console.log("Sending messages to Claude:", messages.length, "messages");
             let response = await this.llm.messages.create({
-                model: "claude-sonnet-3-7-latest",
+                model: "claude-3-7-sonnet-latest",
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,
                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
                 tools: this.tools
             });
-            // console.log("Claude response:", response);
             const assistantContent = [];
             let hasToolCalls = false;
             for (const content of response.content) {
@@ -223,7 +356,6 @@ class MCPClient {
                     hasToolCalls = true;
                     const toolName = content.name;
                     const toolArgs = content.input;
-                    // console.log(`Executing tool: ${toolName} with args:`, toolArgs);
                     try {
                         // Get the appropriate client for this tool
                         const client = this.getClientForTool(toolName);
@@ -277,7 +409,50 @@ class MCPClient {
                 break;
             }
         }
-        return finalText.join("\n");
+        // Save the updated messages to the session file
+        await this.updateSessionMessages(sessionId, messages);
+        return {
+            response: finalText.join("\n"),
+            sessionId: sessionId
+        };
+    }
+    // Method to get all sessions
+    async getAllSessions() {
+        return await this.loadSessions();
+    }
+    // Method to get a specific session
+    async getSession(sessionId) {
+        const sessions = await this.loadSessions();
+        return sessions[sessionId] || null;
+    }
+    // Method to delete a session
+    async deleteSession(sessionId) {
+        const sessions = await this.loadSessions();
+        if (sessions[sessionId]) {
+            delete sessions[sessionId];
+            await this.saveSessions(sessions);
+            return true;
+        }
+        return false;
+    }
+    // Method to clear all sessions
+    async clearAllSessions() {
+        await this.saveSessions({});
+    }
+    // Method to get session summary (useful for listing sessions)
+    async getSessionsSummary() {
+        const sessions = await this.loadSessions();
+        return Object.entries(sessions).map(([sessionId, messages]) => {
+            const lastMessage = messages[messages.length - 1];
+            return {
+                sessionId,
+                messageCount: messages.length,
+                lastMessage: lastMessage?.role === 'user'
+                    ? (typeof lastMessage.content === 'string' ? lastMessage.content : 'Complex message')
+                    : undefined,
+                timestamp: new Date().toISOString() // You might want to store actual timestamps
+            };
+        });
     }
     // Method to check server status
     getServerStatus() {
@@ -663,13 +838,13 @@ async function main() {
         // LLM interaction endpoint
         const chatHandler = async (req, res) => {
             try {
-                const { query } = req.body;
+                const { query, sessionId } = req.body;
                 if (!query) {
                     res.status(400).json({ error: 'Query is required' });
                     return;
                 }
-                const response = await mcpClient.processQuery(query);
-                res.json({ response });
+                const response = await mcpClient.processQuery(query, sessionId);
+                res.json(response);
             }
             catch (error) {
                 console.error('Error processing query:', error);

@@ -5,3 +5,4 @@ node_modules/
 old/
 
 .google_refresh_token
+sessions.json
