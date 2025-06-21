@@ -161,7 +161,10 @@ class MCPClient {
                 }
             });
             await Promise.allSettled(connectionPromises);
-            console.log("🚀 MCP Client initialized with tools:", this.tools.map(({ name }) => name));
+            // console.log(
+            //     "🚀 MCP Client initialized with tools:",
+            //     this.tools.map(({ name }) => name)
+            // );
             console.log("📊 Connected servers:", Array.from(this.servers.entries())
                 .filter(([_, config]) => config.isConnected)
                 .map(([name]) => name));
@@ -200,14 +203,14 @@ class MCPClient {
         while (true) {
             console.log("Sending messages to Claude:", messages);
             let response = await this.llm.messages.create({
-                model: "claude-sonnet-4-20250514",
+                model: "claude-sonnet-3-7-latest",
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,
                 system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
                 tools: this.tools
             });
-            console.log("Claude response:", response);
+            // console.log("Claude response:", response);
             const assistantContent = [];
             let hasToolCalls = false;
             for (const content of response.content) {
@@ -220,7 +223,7 @@ class MCPClient {
                     hasToolCalls = true;
                     const toolName = content.name;
                     const toolArgs = content.input;
-                    console.log(`Executing tool: ${toolName} with args:`, toolArgs);
+                    // console.log(`Executing tool: ${toolName} with args:`, toolArgs);
                     try {
                         // Get the appropriate client for this tool
                         const client = this.getClientForTool(toolName);
@@ -400,7 +403,7 @@ async function main() {
         // console.log("MCP Client connected to server");
         // console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
         console.log("Server status:", mcpClient.getServerStatus());
-        console.log("Tools by server:", mcpClient.getToolsByServer());
+        // console.log("Tools by server:", mcpClient.getToolsByServer());
         // Health check endpoint
         const healthCheck = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });

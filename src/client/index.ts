@@ -491,7 +491,7 @@ class MCPClient {
             console.log("Sending messages to Claude:", messages);
             
             let response = await this.llm.messages.create({
-                model: "claude-sonnet-4-20250514",
+                model: "claude-sonnet-3-7-latest",
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,
@@ -499,7 +499,7 @@ class MCPClient {
                 tools: this.tools
             });
 
-            console.log("Claude response:", response);
+            // console.log("Claude response:", response);
 
             const assistantContent = [];
             let hasToolCalls = false;
@@ -515,7 +515,7 @@ class MCPClient {
                     const toolName = content.name;
                     const toolArgs = content.input as { [x: string]: unknown };
 
-                    console.log(`Executing tool: ${toolName} with args:`, toolArgs);
+                    // console.log(`Executing tool: ${toolName} with args:`, toolArgs);
 
                     try {
                         // Get the appropriate client for this tool
