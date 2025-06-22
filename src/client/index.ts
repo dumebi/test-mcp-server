@@ -11,7 +11,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { google } from 'googleapis';
 import { v4 as uuidv4 } from 'uuid';
 
-
 // Express
 import express from "express";
 import type { RequestHandler } from "express";
@@ -43,12 +42,20 @@ interface MCPServerConfig {
     isConnected: boolean;
 }
 
+// SSE Event interface
+interface SSEEvent {
+    type: 'session_created' | 'thinking' | 'tool_call' | 'tool_result' | 'text_chunk' | 'complete' | 'error';
+    data: any;
+    sessionId?: string;
+}
+
 class MCPClient {
     private llm: Anthropic;
     private servers: Map<string, MCPServerConfig> = new Map();
     private toolToServerMap: Map<string, string> = new Map(); // Maps tool name to server name
     public tools: Tool[] = [];
     private sessionsFilePath: string;
+    private systemPrompt: string = '';
 
     constructor() {
         this.llm = new Anthropic({
@@ -59,6 +66,19 @@ class MCPClient {
         this.initializeServers();
         this.sessionsFilePath = path.join(process.cwd(), 'sessions.json');
         this.initializeSessionsFile();
+        this.loadSystemPrompt();
+    }
+
+    private loadSystemPrompt() {
+        try {
+            const promptPath = path.join(process.cwd(), 'system-prompt.txt');
+            this.systemPrompt = fs.readFileSync(promptPath, 'utf8').trim();
+            console.log('✅ System prompt loaded successfully');
+        } catch (error) {
+            console.error('❌ Failed to load system prompt file:', error);
+            // Fallback to a basic prompt if file doesn't exist
+            this.systemPrompt = 'You are Laura, a professional executive assistant. Provide helpful, accurate, and professional assistance.';
+        }
     }
 
     private async initializeSessionsFile() {
@@ -97,6 +117,10 @@ class MCPClient {
         const sessions = await this.loadSessions();
         sessions[sessionId] = messages;
         await this.saveSessions(sessions);
+    }
+
+    private getSystemPrompt(): string {
+        return this.systemPrompt;
     }
 
     private initializeServers() {
@@ -248,11 +272,6 @@ class MCPClient {
 
             await Promise.allSettled(connectionPromises);
 
-            // console.log(
-            //     "🚀 MCP Client initialized with tools:",
-            //     this.tools.map(({ name }) => name)
-            // );
-            
             console.log(
                 "📊 Connected servers:",
                 Array.from(this.servers.entries())
@@ -288,110 +307,224 @@ class MCPClient {
         return server.client;
     }
 
-    // async processQuery(query: string) {
-    //     let messages: MessageParam[] = [
-    //         {
-    //             role: "user",
-    //             content: query
-    //         }
-    //     ];
+    // NEW: SSE-enabled query processing method
+    async processQuerySSE(
+        query: string, 
+        sessionId: string | undefined,
+        sendEvent: (event: SSEEvent) => void
+    ): Promise<{ sessionId: string }> {
+        try {
+            // Generate new session ID if not provided
+            if (!sessionId) {
+                sessionId = uuidv4();
+                console.log(`Created new session: ${sessionId}`);
+                sendEvent({
+                    type: 'session_created',
+                    data: { sessionId },
+                    sessionId
+                });
+            } else {
+                console.log(`Using existing session: ${sessionId}`);
+            }
 
-    //     const finalText: string[] = [];
-        
-    //     while (true) {
-    //         console.log("Sending messages to Claude:", messages);
+            // Load existing messages for this session or start fresh
+            let messages: MessageParam[] = await this.getSessionMessages(sessionId);
             
-    //         let response = await this.llm.messages.create({
-    //             model: "claude-3-7-sonnet-latest",
-    //             max_tokens: 1000,
-    //             stream: false,
-    //             messages: messages,
-    //             system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
-    //             tools: this.tools
-    //         });
+            // Add the new user query
+            messages.push({
+                role: "user",
+                content: query
+            });
 
-    //         // console.log("Claude response:", response);
-
-    //         const assistantContent = [];
-    //         let hasToolCalls = false;
-
-    //         for (const content of response.content) {
-    //             assistantContent.push(content);
+            const finalText: string[] = [];
+            let iterationCount = 0;
+            
+            while (true) {
+                iterationCount++;
+                console.log(`Processing iteration ${iterationCount} with ${messages.length} messages`);
                 
-    //             if (content.type === 'text') {
-    //                 console.log("Text content:", content.text);
-    //                 finalText.push(content.text);
-    //             } else if (content.type === 'tool_use') {
-    //                 hasToolCalls = true;
-    //                 const toolName = content.name;
-    //                 const toolArgs = content.input as { [x: string]: unknown };
+                // sendEvent({
+                //     type: 'thinking',
+                //     data: { 
+                //         message: `Processing your request... (Step ${iterationCount})`,
+                //         iteration: iterationCount, 
+                //         messageCount: messages.length 
+                //     },
+                //     sessionId
+                // });
 
-    //                 // console.log(`Executing tool: ${toolName} with args:`, toolArgs);
+                let response = await this.llm.messages.create({
+                    model: "claude-3-7-sonnet-latest",
+                    max_tokens: 1000,
+                    stream: false,
+                    messages: messages,
+                    system: this.getSystemPrompt(),
+                    tools: this.tools
+                });
 
-    //                 try {
-    //                     // Get the appropriate client for this tool
-    //                     const client = this.getClientForTool(toolName);
+                const assistantContent = [];
+                let hasToolCalls = false;
+
+                for (const content of response.content) {
+                    assistantContent.push(content);
+                    
+                    if (content.type === 'text') {
+                        console.log("Text content:", content.text);
+                        finalText.push(content.text);
+
+                        // Stream text content by sentences for better UX
+                        const sentences = content.text.split(/(?<=[.!?])\s+/).filter(sentence => sentence.trim().length > 0);
+
+                        for (let i = 0; i < sentences.length; i++) {
+                            const sentence = sentences[i];
+                            sendEvent({
+                                type: 'text_chunk',
+                                data: { 
+                                    chunk: sentence + (i < sentences.length - 1 ? ' ' : ''),
+                                    isComplete: i === sentences.length - 1,
+                                    progress: Math.round(((i + 1) / sentences.length) * 100),
+                                    sentenceNumber: i + 1,
+                                    totalSentences: sentences.length
+                                },
+                                sessionId
+                            });
+                            
+                            // Small delay for streaming effect (slightly longer for sentences)
+                            await new Promise(resolve => setTimeout(resolve, 80));
+                        }
                         
-    //                     // Execute tool call on the correct client
-    //                     const result = await client.callTool({
-    //                         name: toolName,
-    //                         arguments: toolArgs
-    //                     });
+                    } else if (content.type === 'tool_use') {
+                        hasToolCalls = true;
+                        const toolName = content.name;
+                        const toolArgs = content.input as { [x: string]: unknown };
 
-    //                     console.log("Tool result:", result);
+                        sendEvent({
+                            type: 'tool_call',
+                            data: { 
+                                message: `Executing ${toolName}...`,
+                                toolName, 
+                                toolArgs,
+                                toolId: content.id
+                            },
+                            sessionId
+                        });
 
-    //                     messages.push({
-    //                         role: "assistant",
-    //                         content: assistantContent
-    //                     });
+                        try {
+                            // Get the appropriate client for this tool
+                            const client = this.getClientForTool(toolName);
+                            
+                            // Execute tool call on the correct client
+                            const result = await client.callTool({
+                                name: toolName,
+                                arguments: toolArgs
+                            });
 
-    //                     messages.push({
-    //                         role: "user",
-    //                         content: [
-    //                             {
-    //                                 type: "tool_result",
-    //                                 tool_use_id: content.id,
-    //                                 content: result.content as string
-    //                             }
-    //                         ]
-    //                     });
+                            console.log("Tool result:", result);
+                            
+                            sendEvent({
+                                type: 'tool_result',
+                                data: { 
+                                    message: `${toolName} completed successfully`,
+                                    toolName,
+                                    toolId: content.id,
+                                    success: true,
+                                    result: result.content
+                                },
+                                sessionId
+                            });
 
-    //                 } catch (error) {
-    //                     console.error("Tool execution error:", error);
-                        
-    //                     messages.push({
-    //                         role: "assistant", 
-    //                         content: assistantContent
-    //                     });
+                            messages.push({
+                                role: "assistant",
+                                content: assistantContent
+                            });
 
-    //                     messages.push({
-    //                         role: "user",
-    //                         content: [
-    //                             {
-    //                                 type: "tool_result",
-    //                                 tool_use_id: content.id,
-    //                                 content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
-    //                                 is_error: true
-    //                             }
-    //                         ]
-    //                     });
-    //                 }
-    //                 break;
-    //             }
-    //         }
+                            messages.push({
+                                role: "user",
+                                content: [
+                                    {
+                                        type: "tool_result",
+                                        tool_use_id: content.id,
+                                        content: result.content as string
+                                    }
+                                ]
+                            });
 
-    //         if (!hasToolCalls) {
-    //             messages.push({
-    //                 role: "assistant",
-    //                 content: assistantContent
-    //             });
-    //             break;
-    //         }
-    //     }
+                        } catch (error) {
+                            console.error("Tool execution error:", error);
+                            
+                            sendEvent({
+                                type: 'tool_result',
+                                data: { 
+                                    message: `Error executing ${toolName}`,
+                                    toolName,
+                                    toolId: content.id,
+                                    success: false,
+                                    error: error instanceof Error ? error.message : String(error)
+                                },
+                                sessionId
+                            });
+                            
+                            messages.push({
+                                role: "assistant", 
+                                content: assistantContent
+                            });
 
-    //     return finalText.join("\n");
-    // }
+                            messages.push({
+                                role: "user",
+                                content: [
+                                    {
+                                        type: "tool_result",
+                                        tool_use_id: content.id,
+                                        content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
+                                        is_error: true
+                                    }
+                                ]
+                            });
+                        }
+                        break;
+                    }
+                }
 
+                if (!hasToolCalls) {
+                    messages.push({
+                        role: "assistant",
+                        content: assistantContent
+                    });
+                    break;
+                }
+            }
+
+            // Save the updated messages to the session file
+            await this.updateSessionMessages(sessionId, messages);
+
+            sendEvent({
+                type: 'complete',
+                data: { 
+                    message: 'Response completed',
+                    finalResponse: finalText.join("\n"),
+                    messageCount: messages.length,
+                    iterations: iterationCount
+                },
+                sessionId
+            });
+
+            return { sessionId };
+
+        } catch (error) {
+            console.error('Error in processQuerySSE:', error);
+            sendEvent({
+                type: 'error',
+                data: { 
+                    message: 'I apologize, but I encountered an error while processing your request.',
+                    error: error instanceof Error ? error.message : String(error) 
+                },
+                sessionId
+            });
+            throw error;
+        }
+    }
+
+    // Original query processing method (unchanged)
     async processQuery(query: string, sessionId?: string): Promise<{ response: string; sessionId: string }> {
         // Generate new session ID if not provided
         if (!sessionId) {
@@ -420,7 +553,7 @@ class MCPClient {
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,
-                system: "You are a seasoned executive assistant for fortune 500 CEOs. Perform tasks with efficiency, if you do not know the answer to a question, ask for clarity. use system time for any date query",
+                system: this.getSystemPrompt(),
                 tools: this.tools
             });
 
@@ -648,36 +781,6 @@ function showAuthUrl(): string {
     return authUrl;
   }
 
-// async function example() {
-//     const mcpClient = new MCPClient();
-    
-//     // You can easily add new servers
-//     mcpClient.addServer('slack', {
-//         client: new Client({ name: "slack-mcp", version: "1.0.0" }, { capabilities: { tools: {} } }),
-//         connection: {
-//             command: "npx",
-//             args: ["-y", "@slack/mcp-server"],
-//             env: {
-//                 "SLACK_BOT_TOKEN": process.env.SLACK_BOT_TOKEN || "",
-//             }
-//         },
-//         toolPrefix: 'slack-mcp:'
-//     });
-
-//     // Connect to servers
-//     await mcpClient.connectToServer("path/to/laura-server.js");
-    
-//     // Check status
-//     console.log("Server status:", mcpClient.getServerStatus());
-//     console.log("Tools by server:", mcpClient.getToolsByServer());
-    
-//     // Process queries
-//     const response = await mcpClient.processQuery("List my events for today");
-    
-//     // Cleanup
-//     await mcpClient.cleanup();
-// }
-
 async function main() {
     const app = express();
     const port = process.env.PORT || 3000;
@@ -685,27 +788,27 @@ async function main() {
     // Middleware
     app.use(cors());
     app.use(express.json());
-    // app.use('/slack/events', slackEvents.requestListener());
 
     const mcpClient = new MCPClient();
 
     try {
         await mcpClient.connectToServer("./build/index.js");
-        // console.log("MCP Client connected to server");
-        // console.log("Available tools:", mcpClient.tools.map(t => t.name).join(", "));
         console.log("Server status:", mcpClient.getServerStatus());
-        // console.log("Tools by server:", mcpClient.getToolsByServer());
+        
         // Health check endpoint
         const healthCheck: RequestHandler = (req, res) => {
             res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
         };
+        
         const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
         if (!slackSigningSecret) {
             throw new Error("SLACK_SIGNING_SECRET is not set");
         }
+        
         const slackEvents = createEventAdapter(slackSigningSecret, {
             includeBody: true,
         });
+        
         const scopes = [
             'app_mentions:read',
             'channels:read',
@@ -728,6 +831,7 @@ async function main() {
         if (!slackStateSecret) {
             throw new Error("SLACK_STATE_SECRET is not set");
         }
+        
         const installer = new InstallProvider({
             clientId: slackClientId,
             clientSecret: slackClientSecret,
@@ -905,7 +1009,7 @@ async function main() {
             console.log('Authorization code received:', code);
             // Fetch Github access token
             if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
-                res.status(500).json({ error: 'Notion client ID and secret are not set' });
+                res.status(500).json({ error: 'Github client ID and secret are not set' });
                 return;
             }
             axios.post('https://github.com/login/oauth/access_token', null, {
@@ -933,7 +1037,7 @@ async function main() {
                     if (envContent.includes('GITHUB_ACCESS_TOKEN=')) {
                         // Replace existing access token
                         envContent = envContent.replace(
-                            /NOTION_ACCESS_TOKEN=.*(\r?\n|$)/,
+                            /GITHUB_ACCESS_TOKEN=.*(\r?\n|$)/,
                             `GITHUB_ACCESS_TOKEN='${data.access_token}'$1`
                         );
                     } else {
@@ -971,10 +1075,10 @@ async function main() {
         });
 
         app.get('/auth/github', async (req, res) => {
-            res.json({ url: `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&scope=user` });
+            res.json({ url: `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GITHUB_REDIRECT_URI}&scope=user` });
         });
 
-        // LLM interaction endpoint
+        // Original HTTP chat endpoint (unchanged)
         const chatHandler: RequestHandler = async (req, res) => {
             try {
                 const { query, sessionId } = req.body;
@@ -990,12 +1094,82 @@ async function main() {
                 res.status(500).json({ error: 'Failed to process query' });
             }
         };
-        app.post('/chat', chatHandler);
+
+        // NEW: SSE Chat Stream endpoint
+        const sseStreamHandler: RequestHandler = async (req, res) => {
+            try {
+                const { query, sessionId } = req.body;
+                if (!query) {
+                    res.status(400).json({ error: 'Query is required' });
+                    return;
+                }
+
+                // Set up SSE headers
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Cache-Control, Content-Type',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+                });
+
+                // Function to send SSE events
+                const sendEvent = (event: SSEEvent) => {
+                    const sseData = `data: ${JSON.stringify(event)}\n\n`;
+                    res.write(sseData);
+                };
+
+                // // Send initial connection event
+                // sendEvent({
+                //     type: 'thinking',
+                //     data: { message: 'Laura is preparing to assist you...' },
+                //     sessionId
+                // });
+
+                // Process the query with SSE
+                await mcpClient.processQuerySSE(query, sessionId, sendEvent);
+
+                // Close the connection gracefully
+                res.end();
+
+            } catch (error) {
+                console.error('Error in SSE stream:', error);
+                
+                try {
+                    const errorEvent: SSEEvent = {
+                        type: 'error',
+                        data: { 
+                            message: 'I apologize, but I encountered an error while processing your request.',
+                            error: error instanceof Error ? error.message : 'Unknown error' 
+                        }
+                    };
+                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                } catch (writeError) {
+                    console.error('Error writing error event:', writeError);
+                }
+                
+                res.end();
+            }
+        };
+
+        // Register endpoints
+        app.post('/chat', chatHandler);           // Original HTTP endpoint
+        app.post('/chat/stream', sseStreamHandler); // New SSE endpoint
+
+        // Handle preflight requests for CORS
+        app.options('/chat/stream', (req, res) => {
+            res.header('Access-Control-Allow-Origin', '*');
+            res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            res.header('Access-Control-Allow-Headers', 'Cache-Control, Content-Type');
+            res.sendStatus(200);
+        });
 
         app.listen(port, () => {
             console.log(`Server running on port ${port}`);
             console.log(`Health check: http://localhost:${port}/health`);
             console.log(`Chat endpoint: http://localhost:${port}/chat`);
+            console.log(`SSE Chat endpoint: http://localhost:${port}/chat/stream`);
         });
 
         // Handle graceful shutdown

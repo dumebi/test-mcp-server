@@ -6,3 +6,12 @@ old/
 
 .google_refresh_token
 sessions.json
+system-prompt.txt
+build/
+dist/
+coverage/
+.vscode/
+.idea/
+*.log
+*.tsbuildinfo
+*.d.ts
