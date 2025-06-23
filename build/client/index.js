@@ -151,6 +151,23 @@ class MCPClient {
             toolPrefix: 'github:',
             isConnected: false
         });
+        // GitHub MCP Server
+        this.servers.set('playwright', {
+            name: 'playwright',
+            client: new Client({
+                name: "laura-playwright",
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                command: "npx",
+                args: ["@playwright/mcp@latest"]
+            },
+            toolPrefix: 'playwright:',
+            isConnected: false
+        });
     }
     // Method to easily add new servers
     addServer(serverName, config) {
@@ -283,7 +300,7 @@ class MCPClient {
                 //     sessionId
                 // });
                 let response = await this.llm.messages.create({
-                    model: "claude-3-7-sonnet-latest",
+                    model: "claude-3-5-haiku-latest",
                     max_tokens: 1000,
                     stream: false,
                     messages: messages,
@@ -453,7 +470,7 @@ class MCPClient {
         while (true) {
             console.log("Sending messages to Claude:", messages.length, "messages");
             let response = await this.llm.messages.create({
-                model: "claude-3-7-sonnet-latest",
+                model: "claude-3-5-haiku-latest",
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,

@@ -188,6 +188,24 @@ class MCPClient {
             toolPrefix: 'github:',
             isConnected: false
         });
+
+        // GitHub MCP Server
+        this.servers.set('playwright', {
+            name: 'playwright',
+            client: new Client({
+                name: "laura-playwright", 
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                command: "npx",
+                args: ["@playwright/mcp@latest"]
+            },
+            toolPrefix: 'playwright:',
+            isConnected: false
+        });
     }
 
     // Method to easily add new servers
