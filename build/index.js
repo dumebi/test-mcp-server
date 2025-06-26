@@ -7,7 +7,6 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { GmailProvider } from './providers/gmailProvider.js';
 import { GoogleCalendarProvider } from './providers/googleCalendarProvider.js';
 import { GoogleContactsProvider } from './providers/gContactsProvider.js';
-import { TimeProvider } from './providers/timeProvider.js';
 // 디버그 로그
 function debugLog(...args) {
     console.error('DEBUG:', new Date().toISOString(), ...args);
@@ -35,15 +34,13 @@ const calendarProvider = new GoogleCalendarProvider();
 await calendarProvider.initialize();
 const contactsProvider = new GoogleContactsProvider();
 await contactsProvider.initialize();
-const timeProvider = new TimeProvider();
 // Tool handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     debugLog('List tools request received');
     return { tools: [
             ...gmailProvider.getToolDefinitions(),
             ...calendarProvider.getToolDefinitions(),
-            ...contactsProvider.getToolDefinitions(),
-            ...timeProvider.getToolDefinitions()
+            ...contactsProvider.getToolDefinitions()
         ] };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -106,12 +103,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
             case 'contacts_getContact':
                 result = await contactsProvider.getContact(args, GOOGLE_REFRESH_TOKEN);
-                break;
-            case 'get_current_time':
-                result = await timeProvider.get_current_time(args);
-                break;
-            case 'convert_time':
-                result = await timeProvider.convert_time(args);
                 break;
             default:
                 return {

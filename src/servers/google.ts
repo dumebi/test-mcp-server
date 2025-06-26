@@ -4,10 +4,9 @@ dotenv.config(); // 로컬 개발 시 .env 파일을 읽습니다.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { GmailProvider } from './providers/gmailProvider.js';
-import { GoogleCalendarProvider } from './providers/googleCalendarProvider.js';
-import { GoogleContactsProvider } from './providers/gContactsProvider.js';
-import { TimeProvider } from './providers/timeProvider.js';
+import { GmailProvider } from '../providers/gmailProvider.js';
+import { GoogleCalendarProvider } from '../providers/googleCalendarProvider.js';
+import { GoogleContactsProvider } from '../providers/gContactsProvider.js';
 
 // 디버그 로그
 function debugLog(...args: unknown[]) {
@@ -44,7 +43,6 @@ await calendarProvider.initialize();
 const contactsProvider = new GoogleContactsProvider();
 await contactsProvider.initialize();
 
-const timeProvider = new TimeProvider();
 
 // Tool handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -52,8 +50,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: [
     ...gmailProvider.getToolDefinitions(), 
     ...calendarProvider.getToolDefinitions(),
-    ...contactsProvider.getToolDefinitions(),
-    ...timeProvider.getToolDefinitions()
+    ...contactsProvider.getToolDefinitions()
   ] };
 });
 
@@ -118,12 +115,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case 'contacts_getContact':
         result = await contactsProvider.getContact(args, GOOGLE_REFRESH_TOKEN);
-        break;
-      case 'get_current_time':
-        result = await timeProvider.get_current_time(args);
-        break;
-      case 'convert_time':
-        result = await timeProvider.convert_time(args);
         break;
       default:
         return {

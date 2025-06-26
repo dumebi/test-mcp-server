@@ -40,6 +40,7 @@ interface MCPServerConfig {
         env?: Record<string, string>;
         transort?: string; // Transport type, e.g., "stdio", "http"
         url?: string; // Optional URL for HTTP transport
+        serverScriptPath?: string; // Path to the server script if using stdio
     };
     toolPrefix?: string; // Optional prefix to identify tools from this server
     isConnected: boolean;
@@ -138,8 +139,7 @@ class MCPClient {
             }),
             transport: null,
             connection: {
-                command: "", // Will be set dynamically in connectToServer
-                args: [],
+                serverScriptPath: "./build/servers/google.js", // Path to the server script
                 env: {
                     "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
                     "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
@@ -147,6 +147,22 @@ class MCPClient {
                 }
             },
             toolPrefix: 'laura-mcp:', // Tools from this server start with this prefix
+            isConnected: false
+        });
+
+        this.servers.set('laura-time', {
+            name: 'laura-time',
+            client: new Client({
+                name: "laura-time", 
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                serverScriptPath: "./build/servers/time.js", // Path to the server script
+            },
+            toolPrefix: 'laura-time:', // Tools from this server start with this prefix
             isConnected: false
         });
 
@@ -238,33 +254,47 @@ class MCPClient {
         });
     }
 
-    async connectToServer(serverScriptPath?: string) {
+    async connectToServer() {
         try {
             // Set up Laura Google server connection if script path provided
-            if (serverScriptPath) {
-                const isJs = serverScriptPath.endsWith(".js");
-                const isPy = serverScriptPath.endsWith(".py");
-                if (!isJs && !isPy) {
-                    throw new Error("Server script must be a .js or .py file");
-                }
+            // if (serverScriptPath) {
+            //     const isJs = serverScriptPath.endsWith(".js");
+            //     const isPy = serverScriptPath.endsWith(".py");
+            //     if (!isJs && !isPy) {
+            //         throw new Error("Server script must be a .js or .py file");
+            //     }
                 
-                const command = isPy
-                    ? process.platform === "win32" ? "python" : "python3"
-                    : process.execPath;
+            //     const command = isPy
+            //         ? process.platform === "win32" ? "python" : "python3"
+            //         : process.execPath;
 
-                const lauraServer = this.servers.get('laura-google')!;
-                lauraServer.connection.command = command;
-                lauraServer.connection.args = [serverScriptPath];
-            }
+            //     const lauraServer = this.servers.get('laura-google')!;
+            //     lauraServer.connection.command = command;
+            //     lauraServer.connection.args = [serverScriptPath];
+            // }
 
             // Connect to all servers
             const connectionPromises = Array.from(this.servers.entries()).map(
                 async ([serverName, config]) => {
                     try {
                         // Skip laura-google if no script path provided
-                        if (serverName === 'laura-google' && !serverScriptPath) {
-                            console.log(`Skipping ${serverName} - no script path provided`);
-                            return;
+                        // if (serverName === 'laura-google' && !serverScriptPath) {
+                        //     console.log(`Skipping ${serverName} - no script path provided`);
+                        //     return;
+                        // }
+
+                        if(config.connection.serverScriptPath) {
+                            const isJs = config.connection.serverScriptPath.endsWith(".js");
+                            const isPy = config.connection.serverScriptPath.endsWith(".py");
+                            if (!isJs && !isPy) {
+                                throw new Error("Server script must be a .js or .py file");
+                            }
+                            
+                            const command = isPy
+                                ? process.platform === "win32" ? "python" : "python3"
+                                : process.execPath;
+                            config.connection.command = command;
+                            config.connection.args = [config.connection.serverScriptPath];
                         }
 
                         console.log(`Connecting to ${serverName}...`);
@@ -835,7 +865,7 @@ async function main() {
     const mcpClient = new MCPClient();
 
     try {
-        await mcpClient.connectToServer("./build/index.js");
+        await mcpClient.connectToServer();
         console.log("Server status:", mcpClient.getServerStatus());
         
         // Health check endpoint
