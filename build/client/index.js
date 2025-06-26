@@ -3,6 +3,7 @@ import { Anthropic } from "@anthropic-ai/sdk";
 // MCP Client
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { google } from 'googleapis';
 import { v4 as uuidv4 } from 'uuid';
 // Express
@@ -131,6 +132,22 @@ class MCPClient {
             toolPrefix: 'notionApi:',
             isConnected: false
         });
+        this.servers.set('graphiti', {
+            name: 'graphiti',
+            client: new Client({
+                name: "laura-graphiti",
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                transort: "sse",
+                url: process.env.GRAPHITI_MCP_URL || "http://localhost:8000/sse"
+            },
+            toolPrefix: 'graphiti:',
+            isConnected: false
+        });
         // GitHub MCP Server
         this.servers.set('github', {
             name: 'github',
@@ -203,15 +220,21 @@ class MCPClient {
                         return;
                     }
                     console.log(`Connecting to ${serverName}...`);
-                    // Create transport
-                    config.transport = new StdioClientTransport({
-                        command: config.connection.command,
-                        args: config.connection.args,
-                        env: Object.fromEntries(Object.entries({
-                            ...process.env,
-                            ...config.connection.env
-                        }).filter(([_, v]) => typeof v === "string" && v !== undefined))
-                    });
+                    if (config.connection.transort === "sse") {
+                        // Create SSE transport
+                        config.transport = new SSEClientTransport(new URL(config.connection.url || ""), {});
+                    }
+                    else {
+                        // Default to Stdio transport if not specified
+                        config.transport = new StdioClientTransport({
+                            command: config.connection.command || "npx",
+                            args: config.connection.args,
+                            env: Object.fromEntries(Object.entries({
+                                ...process.env,
+                                ...config.connection.env
+                            }).filter(([_, v]) => typeof v === "string" && v !== undefined))
+                        });
+                    }
                     // Connect client
                     await config.client.connect(config.transport);
                     config.isConnected = true;
@@ -300,7 +323,7 @@ class MCPClient {
                 //     sessionId
                 // });
                 let response = await this.llm.messages.create({
-                    model: "claude-3-5-haiku-latest",
+                    model: "claude-3-7-sonnet-latest",
                     max_tokens: 1000,
                     stream: false,
                     messages: messages,
@@ -470,7 +493,7 @@ class MCPClient {
         while (true) {
             console.log("Sending messages to Claude:", messages.length, "messages");
             let response = await this.llm.messages.create({
-                model: "claude-3-5-haiku-latest",
+                model: "claude-3-7-sonnet-latest",
                 max_tokens: 1000,
                 stream: false,
                 messages: messages,

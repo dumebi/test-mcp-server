@@ -8,6 +8,7 @@ import {
 // MCP Client
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { google } from 'googleapis';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -32,11 +33,13 @@ if (!ANTHROPIC_API_KEY) {
 interface MCPServerConfig {
     name: string;
     client: Client;
-    transport: StdioClientTransport | null;
+    transport: StdioClientTransport | SSEClientTransport | null; // Transport type, can be stdio or SSE
     connection: {
-        command: string;
-        args: string[];
+        command?: string;
+        args?: string[];
         env?: Record<string, string>;
+        transort?: string; // Transport type, e.g., "stdio", "http"
+        url?: string; // Optional URL for HTTP transport
     };
     toolPrefix?: string; // Optional prefix to identify tools from this server
     isConnected: boolean;
@@ -168,6 +171,23 @@ class MCPClient {
             isConnected: false
         });
 
+        this.servers.set('graphiti', {
+            name: 'graphiti',
+            client: new Client({
+                name: "laura-graphiti", 
+                version: "1.0.0"
+            }, {
+                capabilities: { tools: {} }
+            }),
+            transport: null,
+            connection: {
+                transort: "sse",
+                url: process.env.GRAPHITI_MCP_URL || "http://localhost:8000/sse"  
+            },
+            toolPrefix: 'graphiti:',
+            isConnected: false
+        });
+
         // GitHub MCP Server
         this.servers.set('github', {
             name: 'github',
@@ -248,18 +268,23 @@ class MCPClient {
                         }
 
                         console.log(`Connecting to ${serverName}...`);
-                        
-                        // Create transport
-                        config.transport = new StdioClientTransport({
-                            command: config.connection.command,
-                            args: config.connection.args,
-                            env: Object.fromEntries(
-                                Object.entries({
-                                    ...process.env,
-                                    ...config.connection.env
-                                }).filter(([_, v]) => typeof v === "string" && v !== undefined)
-                            ) as Record<string, string>
-                        });
+
+                        if (config.connection.transort === "sse") {
+                            // Create SSE transport
+                            config.transport = new SSEClientTransport(new URL(config.connection.url || ""), {});
+                        } else {
+                            // Default to Stdio transport if not specified
+                           config.transport = new StdioClientTransport({
+                                command: config.connection.command  || "npx",
+                                args: config.connection.args,
+                                env: Object.fromEntries(
+                                    Object.entries({
+                                        ...process.env,
+                                        ...config.connection.env
+                                    }).filter(([_, v]) => typeof v === "string" && v !== undefined)
+                                ) as Record<string, string>
+                            });
+                        }
 
                         // Connect client
                         await config.client.connect(config.transport);
