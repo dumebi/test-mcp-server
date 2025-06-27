@@ -1,286 +1,389 @@
-import { people_v1, google } from 'googleapis';
-import { OAuth2Client } from 'google-auth-library';
-import * as dotenv from 'dotenv';
+import { ApiRequestError, TweetV2, TweetV2PaginableTimelineResult, TwitterApi, UserV2, ListV2, InlineErrorV2, EUploadMimeType } from 'twitter-api-v2';
 
-// Import custom types instead of from the SDK
-import {
-  ToolResponse,
-} from '../utils/types.js';
-import { optional } from 'zod/v4';
-
-// Load environment variables
-dotenv.config();
-
-export class GoogleContactsProvider {
-  private auth: OAuth2Client | null = null;
-  private people: people_v1.People | null = null;
+/**
+ * Twitter service for interacting with the Twitter API
+ */
+export class TwitterService {
+  private static instance: TwitterService;
+  private client: TwitterApi | null = null;
 
   /**
-   * Initialize the Google Calendar client
+   * Private constructor to enforce singleton pattern
    */
-  async initialize(): Promise<void> {
-    try {
-      // Set up OAuth2 client
-      this.auth = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI
-      );
-    } catch (error) {
-      console.error('Error initializing Google Mail client:', error);
-      throw error;
+  private constructor() {}
+
+  /**
+   * Get the singleton instance of TwitterService
+   */
+  public static getInstance(): TwitterService {
+    if (!TwitterService.instance) {
+      TwitterService.instance = new TwitterService();
     }
+    return TwitterService.instance;
   }
 
   /**
-   * Get authorization URL for OAuth2 flow
+   * Initialize the Twitter client with credentials
+   * @returns The initialized Twitter client
    */
-  private getAuthUrl(): string {
-    if (!this.auth) {
-      throw new Error('Auth client not initialized');
-    }
-
-    return this.auth.generateAuthUrl({
-      access_type: 'offline',
-      scope: [
-        "profile", // Basic profile info
-        "email", // User email address
-        "https://www.googleapis.com/auth/gmail.modify", // Modify Gmail data
-        "https://www.googleapis.com/auth/gmail.readonly", // Read Gmail data
-        "https://www.googleapis.com/auth/drive", // Access Google Drive
-        "https://www.googleapis.com/auth/calendar", // Access Google Calendar
-        "https://www.googleapis.com/auth/tasks", // Access Google Tasks
-        "https://www.googleapis.com/auth/youtube.readonly", // Read YouTube data
-        "https://www.googleapis.com/auth/contacts.readonly", // Read Google Contacts
-        "https://www.googleapis.com/auth/contacts", // Manage Google Contacts
-      ],
-      prompt: 'consent', // Always show consent screen to ensure we get a refresh token
-      include_granted_scopes: true
-    });
-  }
-
-  /**
-   * Set authorization code from OAuth2 flow
-   */
-  async setAuthCode(code: string): Promise<void> {
-    if (!this.auth) {
-      throw new Error('Auth client not initialized');
-    }
-
-    const { tokens } = await this.auth.getToken(code);
-    this.auth.setCredentials(tokens);
-
-    // Initialize the calendar client
-    this.people = google.people({ version: 'v1', auth: this.auth });
-
-    console.error('Successfully authenticated with Google Mail API');
-    console.error('Refresh token:', tokens.refresh_token);
-    console.error('Add this refresh token to your .env file as GOOGLE_REFRESH_TOKEN');
-  }
-
-  /**
-   * Get the tool definitions
-   */
-  getToolDefinitions(): Array<any> {
-    return [
-      {
-        name: 'contacts_listContacts',
-        description: 'List contacts from the users Google Contacts.',
-        inputSchema: {
-          type: "object",
-          properties: {
-            maxResults: {
-              type: 'number',
-              description: 'Maximum number of results to return (default: 10)',
-            },
-          },
-        },
-      },
-      {
-        name: 'contacts_searchContacts',
-        description: 'Search for contacts by name, email, or phone number.',
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: 'string',
-              description: 'The query string to search for (e.g., "John Doe", "steffie")',
-            },
-            maxResults: {
-              type: 'number',
-              description: 'Maximum number of results to return (default: 10)',
-            },
-          },
-          required: ['query'],
-        },
-      },
-      {
-        name: 'contacts_getContact',
-        description: 'Get detailed information for a specific contact using their resource name.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            resourceName: {
-              type: 'string',
-              description: 'The resource name of the contact (e.g., "people/c123456789")',
-            },
-          },
-          required: ['resourceName'],
-        },
+  public getClient(): TwitterApi {
+    if (!this.client) {
+      if (!process.env.TWITTER_API_KEY || !process.env.TWITTER_API_KEY_SECRET || 
+          !process.env.TWITTER_ACCESS_TOKEN) {
+        throw new Error('Twitter credentials are not properly configured in environment variables');
       }
-    ];
+      
+      this.client = new TwitterApi({
+        appKey: process.env.TWITTER_API_KEY,
+        appSecret: process.env.TWITTER_API_KEY_SECRET,
+        accessToken: process.env.TWITTER_ACCESS_TOKEN
+    });
+
+    //  console.log('Twitter client initialized successfully');
+    }
+    return this.client;
   }
 
   /**
-   * Send an email using People API
+   * Get tweets for a specific user
+   * @param userId The Twitter user ID
+   * @param paginationToken Optional pagination token for fetching next page
+   * @returns Promise resolving to user timeline data
    */
-  public async listContacts(parameters: any, refresh_token: string): Promise<ToolResponse> {
-    if (!this.auth) {
-      throw new Error('Auth client not initialized');
-    }
-    this.auth.setCredentials({
-      refresh_token
-    });
-
-      // Initialize the people client
-    this.people = google.people({ version: "v1", auth: this.auth });
-    const { pageSize } = parameters;
+  public async getUserTweets(userId: string, paginationToken?: string, exclude?: ('retweets' | 'replies')[], maxResults?: number): Promise<TweetV2[] | InlineErrorV2[] | ApiRequestError | string> {
     try {
-      const response = await this.people.people.connections.list({
-        resourceName: "people/me",
-        pageSize,
-        personFields: 'names,emailAddresses,phoneNumbers', // Specify the fields you want
-        // Add sortOrder if needed: people.connections.list({ sortOrder: 'LAST_MODIFIED_ASCENDING' })
+      const client = this.getClient();
+      const tweets = await client.v2.userTimeline(userId, {
+        exclude: exclude ?? ["retweets", "replies"],
+        max_results: 50,
+        pagination_token: paginationToken,
       });
 
-      // const connections = response.data.connections;
-      // if (!connections || connections.length === 0) {
-      //   return { content: [{ type: "text", text: "No contacts found." }] };
-      // }
-
-      // const formattedContacts = connections.map((person) => ({
-      //   resourceName: person.resourceName,
-      //   name: person.names?.[0]?.displayName || "N/A",
-      //   emails:
-      //     person.emailAddresses?.map((e) => e.value).filter(Boolean) || [],
-      //   phoneNumbers:
-      //     person.phoneNumbers?.map((p) => p.value).filter(Boolean) || [],
-      // }));
-      return response 
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
-  }
-
-  public async searchContacts(parameters: any, refresh_token: string): Promise<ToolResponse> {
-   if (!this.auth) {
-      throw new Error('Auth client not initialized');
-    }
-    this.auth.setCredentials({
-      refresh_token
-    });
-
-      // Initialize the people client
-    this.people = google.people({ version: "v1", auth: this.auth });
-    const { query, pageSize } = parameters;
-    // let files: string[] = [];
-
-    try {
-      const response = await this.people.people.searchContacts({
-        // Corrected API endpoint
-        query,
-        pageSize,
-        readMask: 'names,emailAddresses,phoneNumbers', // Specify the fields you want
+      return JSON.stringify({
+        result: tweets.data,
+        message: "Tweets fetched successfully",
       });
-
-      // const results = response.data.results;
-      // if (!results || results.length === 0) {
-      //   return {
-      //     content: [
-      //       {
-      //         type: "text",
-      //         text: `No contacts found matching query "${query}".`,
-      //       },
-      //     ],
-      //   };
-      // }
-
-      // const formattedResults = results.map((result) => ({
-      //   resourceName: result.person?.resourceName,
-      //   name: result.person?.names?.[0]?.displayName || "N/A",
-      //   emails:
-      //     result.person?.emailAddresses
-      //       ?.map((e) => e.value)
-      //       .filter(Boolean) || [],
-      //   phoneNumbers:
-      //     result.person?.phoneNumbers?.map((p) => p.value).filter(Boolean) ||
-      //     [],
-      // }));
-      return response 
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
+    } catch (error: any) {
+      // Convert error to a string representation to avoid serialization issues
+      const errorMessage = error;
+      console.error('Error fetching tweets:', errorMessage);
+      return error;
     }
   }
 
   /**
-   * List events in a calendar
+   * Get a single tweet by ID
+   * @param tweetId The ID of the tweet to retrieve
+   * @returns Promise resolving to the tweet data or null if not found
    */
-  public async getContact(parameters: any, refresh_token: string): Promise<ToolResponse> {
-    if (!this.auth) {
-      throw new Error('Auth client not initialized');
-    }
-    this.auth.setCredentials({
-      refresh_token
-    });
-
-      // Initialize the people client
-    this.people = google.people({ version: "v1", auth: this.auth });
-    const { resourceName } = parameters;
-
+  public async getTweet(tweetId: string): Promise<TweetV2 | ApiRequestError> {
     try {
-      const response = await this.people.people.get({
-        resourceName,
-        personFields: 'names,emailAddresses,phoneNumbers,birthdays,addresses,organizations,biographies', // Specify the fields you want
+      const client = this.getClient();
+      const result = await client.v2.singleTweet(tweetId);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Get mentions for a specific user
+   * @param userId The Twitter user ID
+   * @param paginationToken Optional pagination token for fetching next page
+   * @param maxResults Optional parameter to specify the number of results to return (default: 10)
+   * @returns Promise resolving to user mention timeline data
+   */
+  public async getUserMentionTimeline(userId: string, paginationToken?: string, maxResults?: number): Promise<TweetV2PaginableTimelineResult | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const mentions = await client.v2.userMentionTimeline(userId, {
+        max_results: maxResults || 10,
+        pagination_token: paginationToken,
+      });
+      return mentions.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Quote a tweet with a comment
+   * @param tweetId The ID of the tweet to quote
+   * @param replyText The text to include with the quote
+   * @returns Promise resolving to the created quote tweet data or error
+   */
+  public async quoteAndComment(tweetId: string, replyText: string): Promise<{
+      id: string;
+      text: string;
+    } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const quote = await client.v2.quote(replyText, tweetId);
+      return quote.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Reply to a tweet
+   * @param tweetId The ID of the tweet to reply to
+   * @param replyText The text content of the reply
+   * @returns Promise resolving to the created reply tweet data or error
+   */
+  public async replyToTweet(tweetId: string, replyText: string): Promise<{
+    id: string;
+    text: string;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const reply = await client.v2.reply(replyText, tweetId);
+      return reply.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Post a new tweet, optionally with an image
+   * @param text The text content of the tweet
+   * @param imageBase64 Optional base64 encoded image to attach to the tweet
+   * @returns Promise resolving to the created tweet data or error
+   */
+  public async postTweet(text: string, imageBase64?: string): Promise<{
+    id: string;
+    text: string;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      
+      if (imageBase64) {
+        // Convert base64 to buffer
+        const buffer = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+        
+        // Determine image type from base64 string
+        let mimeType = EUploadMimeType.Jpeg;
+        if (imageBase64.includes('data:image/png')) {
+          mimeType = EUploadMimeType.Png;
+        } else if (imageBase64.includes('data:image/gif')) {
+          mimeType = EUploadMimeType.Gif;
+        } else if (imageBase64.includes('data:image/webp')) {
+          mimeType = EUploadMimeType.Webp;
+        }
+        
+        // Upload the media
+        const mediaId = await client.v2.uploadMedia(buffer, {
+          media_type: mimeType,
+          media_category: 'tweet_image'
         });
-
-      // const person = response.data;
-
-      // // Format the output re
-      // const details = {
-      //   resourceName: person.resourceName,
-      //   names: person.names,
-      //   emailAddresses: person.emailAddresses,
-      //   phoneNumbers: person.phoneNumbers,
-      //   birthdays: person.birthdays,
-      //   addresses: person.addresses,
-      //   organizations: person.organizations,
-      //   biographies: person.biographies,
-      // };
-
-      return response 
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
+        
+        // Post tweet with media
+        const tweet = await client.v2.tweet({
+          text,
+          media: {
+            media_ids: [mediaId]
+          }
+        });
+        
+        return tweet.data;
+      } else {
+        // Post text-only tweet
+        const tweet = await client.v2.tweet(text);
+        return tweet.data;
+      }
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
     }
   }
 
   /**
-   * Check if the provider is authenticated with Google Calendar
+   * Like a tweet with the authenticated user
+   * @param tweetId The ID of the tweet to like
+   * @returns Promise resolving to the like response data or error
    */
-  isAuthenticated(): boolean {
-    return this.people !== null;
+  public async likeTweet(tweetId: string): Promise<{
+    liked: boolean;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      // First get the authenticated user's ID
+      const me = await client.v2.me();
+      const result = await client.v2.like(me.data.id, tweetId);
+      return { liked: result.data.liked };
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
   }
 
   /**
-   * Display authorization URL to the user
+   * Follow a user
+   * @param targetUserId The ID of the user to follow
+   * @returns Promise resolving to the follow response data or error
    */
-  private showAuthUrl(): void {
-    const authUrl = this.getAuthUrl();
-    console.error('\n🔑 Authorization Required');
-    console.error('-------------------');
-    console.error('1. Visit this URL to authorize the application:');
-    console.error(authUrl);
-    console.error('\n2. After approval, you will be redirected to a URL. Copy the "code" parameter from that URL.');
-    console.error('\n3. Use the set_auth_code tool or run this command:');
-    console.error(`   npx ts-node src/auth-helper.js "PASTE_AUTH_CODE_HERE"\n`);
+  public async followUser(targetUserId: string): Promise<{
+    following: boolean;
+    pending_follow: boolean;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const me = await client.v2.me();
+      const result = await client.v2.follow(me.data.id, targetUserId);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Unfollow a user
+   * @param targetUserId The ID of the user to unfollow
+   * @returns Promise resolving to the unfollow response data or error
+   */
+  public async unfollowUser(targetUserId: string): Promise<{
+    following: boolean;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const me = await client.v2.me();
+      const result = await client.v2.unfollow(me.data.id, targetUserId);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Get user information by username
+   * @param username The Twitter username (without @ symbol)
+   * @returns Promise resolving to the user data or error
+   */
+  public async getUserByUsername(username: string): Promise<UserV2 | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v2.userByUsername(username);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Search tweets with a query
+   * @param query The search query
+   * @param maxResults Maximum number of results to return (default: 10)
+   * @returns Promise resolving to an array of tweets or error
+   */
+  public async searchTweets(query: string, maxResults: number = 10): Promise<TweetV2[] | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v2.search(query, {
+        max_results: maxResults,
+      });
+      return result.data.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Get trending topics for a specific location
+   * @param woeid The "Where On Earth ID" (WOEID) for the location (e.g., 1 for worldwide)
+   * @returns Promise resolving to trending topics or error
+   */
+  public async getTrendingTopics(woeid: number = 1): Promise<any | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v1.trendsAvailable();
+      return result;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Create a new list
+   * @param name The name of the list
+   * @param description Optional description for the list
+   * @param isPrivate Whether the list should be private (default: false)
+   * @returns Promise resolving to the created list data or error
+   */
+  public async createList(name: string, description?: string, isPrivate: boolean = false): Promise<ListV2 | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v2.createList({
+        name,
+        description,
+        private: isPrivate,
+      });
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Add a member to a list
+   * @param listId The ID of the list
+   * @param userId The ID of the user to add
+   * @returns Promise resolving to the response data or error
+   */
+  public async addListMember(listId: string, userId: string): Promise<{
+    is_member: boolean;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v2.addListMember(listId, userId);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Remove a member from a list
+   * @param listId The ID of the list
+   * @param userId The ID of the user to remove
+   * @returns Promise resolving to the response data or error
+   */
+  public async removeListMember(listId: string, userId: string): Promise<{
+    is_member: boolean;
+  } | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const result = await client.v2.removeListMember(listId, userId);
+      return result.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
+  }
+
+  /**
+   * Get lists owned by the authenticated user
+   * @returns Promise resolving to an array of lists or error
+   */
+  public async getOwnedLists(): Promise<ListV2[] | ApiRequestError> {
+    try {
+      const client = this.getClient();
+      const me = await client.v2.me();
+      const result = await client.v2.listsOwned(me.data.id);
+      return result.data.data;
+    } catch (error: unknown) {
+      // @ts-ignore
+      return error;
+    }
   }
 }

@@ -973,6 +973,63 @@ async function main() {
                 res.status(500).json({ error: 'Failed to fetch Github token' });
             });
         });
+        app.get('/auth/twitter/callback', async (req, res) => {
+            const { code } = req.query;
+            if (!code || typeof code !== 'string') {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log('Authorization code received:', code);
+            const encoded = Buffer.from(`${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`).toString("base64");
+            console.log('Encoded credentials:', encoded);
+            // Fetch twitter access token
+            if (!process.env.TWITTER_CLIENT_ID) {
+                res.status(500).json({ error: 'Twitter client ID and secret are not set' });
+                return;
+            }
+            axios.post('https://api.x.com/2/oauth2/token', null, {
+                params: {
+                    code,
+                    grant_type: "authorization_code",
+                    client_id: process.env.TWITTER_CLIENT_ID,
+                    code_verifier: "challenge",
+                    redirect_uri: process.env.TWITTER_REDIRECT_URI,
+                },
+                headers: {
+                    Accept: 'application/json',
+                    "Content-Type": "application/json",
+                    'Authorization': `Basic ${encoded}`,
+                },
+            })
+                .then(response => response.data)
+                .then(data => {
+                if (data.error) {
+                    console.error('Error fetching twitter token:', data.error);
+                    res.status(500).json({ error: 'Failed to fetch twitter token' });
+                }
+                else {
+                    console.log('twitter token received:', data);
+                    // Update .env file with the access token
+                    const envPath = path.resolve(process.cwd(), '.env');
+                    let envContent = fs.readFileSync(envPath, 'utf8');
+                    if (envContent.includes('TWITTER_ACCESS_TOKEN=')) {
+                        // Replace existing access token
+                        envContent = envContent.replace(/TWITTER_ACCESS_TOKEN=.*(\r?\n|$)/, `TWITTER_ACCESS_TOKEN='${data.access_token}'$1`);
+                    }
+                    else {
+                        // Add access token
+                        envContent += `\nTWITTER_ACCESS_TOKEN=${data.access_token}\n`;
+                    }
+                    // Write updated content back to .env file
+                    fs.writeFileSync(envPath, envContent);
+                    res.status(200).json({ message: 'Authorization successful. Access token saved.' });
+                }
+            })
+                .catch(error => {
+                console.error('Error during twitter token fetch: %o', error);
+                res.status(500).json({ error: 'Failed to fetch twitter token' });
+            });
+        });
         app.get('/auth/google', (req, res) => {
             const authUrl = showAuthUrl();
             res.json({ authUrl });
@@ -988,6 +1045,9 @@ async function main() {
         });
         app.get('/auth/github', async (req, res) => {
             res.json({ url: `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GITHUB_REDIRECT_URI}&scope=user` });
+        });
+        app.get('/auth/twitter', async (req, res) => {
+            res.json({ url: `https://x.com/i/oauth2/authorize?response_type=code&client_id=${process.env.TWITTER_CLIENT_ID}&redirect_uri=${process.env.TWITTER_REDIRECT_URI}&scope=tweet.write%20tweet.read%20users.read%20follows.read%20offline.access&state=state&code_challenge=challenge&code_challenge_method=plain` });
         });
         // Original HTTP chat endpoint (unchanged)
         const chatHandler = async (req, res) => {
