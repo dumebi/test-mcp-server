@@ -1,16 +1,85 @@
+import { Client, auth } from "twitter-api-sdk";
 import { ApiRequestError, TweetV2, TweetV2PaginableTimelineResult, TwitterApi, UserV2, ListV2, InlineErrorV2, EUploadMimeType } from 'twitter-api-v2';
 
 /**
  * Twitter service for interacting with the Twitter API
  */
+
+export interface GetTokenResponse {
+  refresh_token?: string;
+  access_token?: string;
+  token_type?: string;
+  scope?: string;
+  expires_at: number;
+}
+
+export enum TwitterOAuth2Scopes {
+  TWEET_READ = "tweet.read",
+  TWEET_WRITE = "tweet.write",
+  TWEET_MODERATE_WRITE = "tweet.moderate.write",
+  USERS_READ = "users.read",
+  FOLLOWS_READ = "follows.read",
+  FOLLOWS_WRITE = "follows.write",
+  OFFLINE_ACCESS = "offline.access",
+  SPACE_READ = "space.read",
+  MUTE_READ = "mute.read",
+  MUTE_WRITE = "mute.write",
+  LIKE_READ = "like.read",
+  LIKE_WRITE = "like.write",
+  LIST_READ = "list.read",
+  LIST_WRITE = "list.write",
+  BLOCK_READ = "block.read",
+  BLOCK_WRITE = "block.write",
+  BOOKMARK_READ = "bookmark.read",
+  BOOKMARK_WRITE = "bookmark.write",
+} 
+
 export class TwitterService {
   private static instance: TwitterService;
   private client: TwitterApi | null = null;
+  private authClient: auth.OAuth2User
 
   /**
    * Private constructor to enforce singleton pattern
    */
-  private constructor() {}
+  private constructor() {
+    this.authClient = new auth.OAuth2User({
+      client_id: process.env.TWITTER_CLIENT_ID || "",
+      client_secret: process.env.TWITTER_CLIENT_SECRET || "",
+      callback: process.env.TWITTER_REDIRECT_URI || "",
+      scopes: ["tweet.read", "tweet.write", "users.read"],
+    });
+  }
+
+  async getAuthUrl(scopes?: TwitterOAuth2Scopes[], state: Record<string, string> = {}) {
+    const stateString = JSON.stringify(state);
+    const allScopes = scopes || []
+
+    const client = new auth.OAuth2User({
+      client_id: process.env.TWITTER_CLIENT_ID || "",
+      client_secret: process.env.TWITTER_CLIENT_SECRET || "",
+      callback: process.env.TWITTER_REDIRECT_URI || "",
+      scopes: [...allScopes, "offline.access"],
+    });
+
+    const url = client.generateAuthURL({
+      state: Buffer.from(stateString).toString("base64"),
+      code_challenge_method: "plain",
+      code_challenge: "challenge",
+    });
+
+    return url;
+  }
+
+  async getToken(code: string) {
+    this.authClient.generateAuthURL({
+      state: "challenge",
+      code_challenge_method: 'plain',
+      code_challenge: "challenge",
+    });
+    const { token } = await this.authClient.requestAccessToken(code);
+    return token as GetTokenResponse;
+  }
 
   /**
    * Get the singleton instance of TwitterService
