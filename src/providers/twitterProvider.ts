@@ -36,7 +36,7 @@ export enum TwitterOAuth2Scopes {
 
 export class TwitterService {
   private static instance: TwitterService;
-  private client: TwitterApi | null = null;
+  private client: Client | null = null;
   private authClient: auth.OAuth2User
 
   /**
@@ -61,6 +61,7 @@ export class TwitterService {
       callback: process.env.TWITTER_REDIRECT_URI || "",
       scopes: [...allScopes, "offline.access"],
     });
+
 
     const url = client.generateAuthURL({
       state: Buffer.from(stateString).toString("base64"),
@@ -95,20 +96,30 @@ export class TwitterService {
    * Initialize the Twitter client with credentials
    * @returns The initialized Twitter client
    */
-  public getClient(): TwitterApi {
+  public getClient(): Client {
     if (!this.client) {
       if (!process.env.TWITTER_API_KEY || !process.env.TWITTER_API_KEY_SECRET || 
           !process.env.TWITTER_ACCESS_TOKEN) {
         throw new Error('Twitter credentials are not properly configured in environment variables');
       }
       
-      this.client = new TwitterApi({
-        appKey: process.env.TWITTER_API_KEY,
-        appSecret: process.env.TWITTER_API_KEY_SECRET,
-        accessToken: process.env.TWITTER_ACCESS_TOKEN
+    //   this.client = new TwitterApi({
+    //     appKey: process.env.TWITTER_API_KEY,
+    //     appSecret: process.env.TWITTER_API_KEY_SECRET,
+    //     accessToken: process.env.TWITTER_ACCESS_TOKEN
+    // });
+
+    const allScopes = Object.values(TwitterOAuth2Scopes)
+
+    const client = new auth.OAuth2User({
+      client_id: process.env.TWITTER_CLIENT_ID || "",
+      client_secret: process.env.TWITTER_CLIENT_SECRET || "",
+      callback: process.env.TWITTER_REDIRECT_URI || "",
+      scopes: [...allScopes, "offline.access"],
     });
 
-    //  console.log('Twitter client initialized successfully');
+    this.client = new Client(client)
+     console.log('Twitter client initialized successfully', this.client);
     }
     return this.client;
   }
@@ -122,11 +133,16 @@ export class TwitterService {
   public async getUserTweets(userId: string, paginationToken?: string, exclude?: ('retweets' | 'replies')[], maxResults?: number): Promise<TweetV2[] | InlineErrorV2[] | ApiRequestError | string> {
     try {
       const client = this.getClient();
-      const tweets = await client.v2.userTimeline(userId, {
+      const tweets = await client.tweets.usersIdTweets(userId, {
         exclude: exclude ?? ["retweets", "replies"],
-        max_results: 50,
+        max_results: maxResults || 10,
         pagination_token: paginationToken,
       });
+      // const tweets = await client.v2.userTimeline(userId, {
+      //   exclude: exclude ?? ["retweets", "replies"],
+      //   max_results: 50,
+      //   pagination_token: paginationToken,
+      // });
 
       return JSON.stringify({
         result: tweets.data,
@@ -148,8 +164,29 @@ export class TwitterService {
   public async getTweet(tweetId: string): Promise<TweetV2 | ApiRequestError> {
     try {
       const client = this.getClient();
-      const result = await client.v2.singleTweet(tweetId);
-      return result.data;
+      const result = await client.tweets.findTweetById(tweetId);
+      // const result = await client.v2.singleTweet(tweetId);
+      if (result.data) {
+        // Fix geo.coordinates type if present
+        if (result.data && result.data.geo && result.data.geo.coordinates) {
+          const coords = result.data.geo.coordinates;
+          // Ensure coordinates is [number, number] | null
+          (result.data.geo as any).coordinates = {
+            type: coords.type,
+            coordinates: Array.isArray(coords.coordinates) && coords.coordinates.length === 2
+              ? [coords.coordinates[0], coords.coordinates[1]]
+              : null
+          };
+        }
+        return result.data as TweetV2;
+      } else {
+        return {
+          title: "Not Found",
+          detail: "Tweet not found",
+          type: "about:blank",
+          status: 404
+        } as unknown as ApiRequestError;
+      }
     } catch (error: unknown) {
       // @ts-ignore
       return error;
@@ -163,14 +200,18 @@ export class TwitterService {
    * @param maxResults Optional parameter to specify the number of results to return (default: 10)
    * @returns Promise resolving to user mention timeline data
    */
-  public async getUserMentionTimeline(userId: string, paginationToken?: string, maxResults?: number): Promise<TweetV2PaginableTimelineResult | ApiRequestError> {
+  public async getUserMentionTimeline(userId: string, paginationToken?: string, maxResults?: number): Promise<Object> {
     try {
       const client = this.getClient();
-      const mentions = await client.v2.userMentionTimeline(userId, {
+      const mentions = await client.tweets.usersIdMentions(userId, {
         max_results: maxResults || 10,
         pagination_token: paginationToken,
       });
-      return mentions.data;
+      // const mentions = await client.v2.userMentionTimeline(userId, {
+      //   max_results: maxResults || 10,
+      //   pagination_token: paginationToken,
+      // });
+      return mentions.data ?? {};
     } catch (error: unknown) {
       // @ts-ignore
       return error;
@@ -183,14 +224,16 @@ export class TwitterService {
    * @param replyText The text to include with the quote
    * @returns Promise resolving to the created quote tweet data or error
    */
-  public async quoteAndComment(tweetId: string, replyText: string): Promise<{
-      id: string;
-      text: string;
-    } | ApiRequestError> {
+  public async quoteAndComment(tweetId: string, replyText: string): Promise<any> {
     try {
       const client = this.getClient();
-      const quote = await client.v2.quote(replyText, tweetId);
-      return quote.data;
+      const result = await client.tweets.createTweet({
+        text: replyText,
+        quote_tweet_id: tweetId, // Use quote_tweet_id to create a quote tweet
+      });
+      // const reply = await client.v2.reply(replyText, tweetId);
+      // const quote = await client.v2.quote(replyText, tweetId);
+      return result.data;
     } catch (error: unknown) {
       // @ts-ignore
       return error;
@@ -203,14 +246,18 @@ export class TwitterService {
    * @param replyText The text content of the reply
    * @returns Promise resolving to the created reply tweet data or error
    */
-  public async replyToTweet(tweetId: string, replyText: string): Promise<{
-    id: string;
-    text: string;
-  } | ApiRequestError> {
+  public async replyToTweet(tweetId: string, replyText: string): Promise<any> {
     try {
       const client = this.getClient();
-      const reply = await client.v2.reply(replyText, tweetId);
-      return reply.data;
+      const result = await client.tweets.createTweet({
+        text: replyText,
+        reply: {
+          in_reply_to_tweet_id: tweetId,
+          exclude_reply_user_ids: [], // Optional: specify user IDs to exclude from the reply
+        }
+      });
+      // const reply = await client.v2.reply(replyText, tweetId);
+      return result.data;
     } catch (error: unknown) {
       // @ts-ignore
       return error;
@@ -223,13 +270,12 @@ export class TwitterService {
    * @param imageBase64 Optional base64 encoded image to attach to the tweet
    * @returns Promise resolving to the created tweet data or error
    */
-  public async postTweet(text: string, imageBase64?: string): Promise<{
-    id: string;
-    text: string;
-  } | ApiRequestError> {
+  public async postTweet(text: string, imageBase64?: string): Promise<any> {
     try {
       const client = this.getClient();
-      
+      if (!text || text.length === 0) {
+        throw new Error("Tweet text cannot be empty");
+      }
       if (imageBase64) {
         // Convert base64 to buffer
         const buffer = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64');
@@ -245,23 +291,29 @@ export class TwitterService {
         }
         
         // Upload the media
-        const mediaId = await client.v2.uploadMedia(buffer, {
-          media_type: mimeType,
-          media_category: 'tweet_image'
-        });
+        // const mediaId = await client.v2.uploadMedia(buffer, {
+        //   media_type: mimeType,
+        //   media_category: 'tweet_image'
+        // });
+
+        const tweet = await client.tweets.createTweet({
+          text,
+        })
         
         // Post tweet with media
-        const tweet = await client.v2.tweet({
-          text,
-          media: {
-            media_ids: [mediaId]
-          }
-        });
+        // const tweet = await client.v2.tweet({
+        //   text,
+        //   media: {
+        //     media_ids: [mediaId]
+        //   }
+        // });
         
         return tweet.data;
       } else {
         // Post text-only tweet
-        const tweet = await client.v2.tweet(text);
+        const tweet = await client.tweets.createTweet({
+          text,
+        })
         return tweet.data;
       }
     } catch (error: unknown) {
@@ -275,15 +327,20 @@ export class TwitterService {
    * @param tweetId The ID of the tweet to like
    * @returns Promise resolving to the like response data or error
    */
-  public async likeTweet(tweetId: string): Promise<{
-    liked: boolean;
-  } | ApiRequestError> {
+  public async likeTweet(tweetId: string): Promise<any> {
     try {
       const client = this.getClient();
+      const me = await client.users.findMyUser();
+      if (!me.data?.id) {
+        throw new Error("Authenticated user ID not found.");
+      }
+      const result = await client.tweets.usersIdLike(me.data.id, {
+        tweet_id: tweetId,
+      });
       // First get the authenticated user's ID
-      const me = await client.v2.me();
-      const result = await client.v2.like(me.data.id, tweetId);
-      return { liked: result.data.liked };
+      // const me = await client.v2.me();
+      // const result = await client.v2.like(me.data.id, tweetId);
+      return result.data;
     } catch (error: unknown) {
       // @ts-ignore
       return error;
@@ -295,14 +352,18 @@ export class TwitterService {
    * @param targetUserId The ID of the user to follow
    * @returns Promise resolving to the follow response data or error
    */
-  public async followUser(targetUserId: string): Promise<{
-    following: boolean;
-    pending_follow: boolean;
-  } | ApiRequestError> {
+  public async followUser(targetUserId: string): Promise<any> {
     try {
       const client = this.getClient();
-      const me = await client.v2.me();
-      const result = await client.v2.follow(me.data.id, targetUserId);
+      const me = await client.users.findMyUser();
+      if (!me.data?.id) {
+        throw new Error("Authenticated user ID not found.");
+      }
+      const result = await client.users.usersIdFollow(me.data.id, {
+         target_user_id: targetUserId,
+      });
+      // const me = await client.v2.me();
+      // const result = await client.v2.follow(me.data.id, targetUserId);
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -315,13 +376,16 @@ export class TwitterService {
    * @param targetUserId The ID of the user to unfollow
    * @returns Promise resolving to the unfollow response data or error
    */
-  public async unfollowUser(targetUserId: string): Promise<{
-    following: boolean;
-  } | ApiRequestError> {
+  public async unfollowUser(targetUserId: string): Promise<any> {
     try {
       const client = this.getClient();
-      const me = await client.v2.me();
-      const result = await client.v2.unfollow(me.data.id, targetUserId);
+      const me = await client.users.findMyUser();
+      if (!me.data?.id) {
+        throw new Error("Authenticated user ID not found.");
+      }
+      const result = await client.users.usersIdUnfollow(me.data.id, targetUserId);
+      // const me = await client.v2.me();
+      // const result = await client.v2.unfollow(me.data.id, targetUserId);
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -334,10 +398,11 @@ export class TwitterService {
    * @param username The Twitter username (without @ symbol)
    * @returns Promise resolving to the user data or error
    */
-  public async getUserByUsername(username: string): Promise<UserV2 | ApiRequestError> {
+  public async getUserByUsername(username: string): Promise<any> {
     try {
       const client = this.getClient();
-      const result = await client.v2.userByUsername(username);
+      const result = await client.users.findUserByUsername(username);
+      // const result = await client.v2.userByUsername(username);
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -351,34 +416,39 @@ export class TwitterService {
    * @param maxResults Maximum number of results to return (default: 10)
    * @returns Promise resolving to an array of tweets or error
    */
-  public async searchTweets(query: string, maxResults: number = 10): Promise<TweetV2[] | ApiRequestError> {
+  public async searchTweets(query: string, maxResults: number = 10): Promise<any> {
     try {
       const client = this.getClient();
-      const result = await client.v2.search(query, {
+      const result = await client.tweets.tweetsFullarchiveSearch({
+        query,
         max_results: maxResults,
       });
-      return result.data.data;
+      // const result = await client.v2.search(query, {
+      //   max_results: maxResults,
+      // });
+      return result.data ?? [];
     } catch (error: unknown) {
       // @ts-ignore
       return error;
     }
   }
 
-  /**
-   * Get trending topics for a specific location
-   * @param woeid The "Where On Earth ID" (WOEID) for the location (e.g., 1 for worldwide)
-   * @returns Promise resolving to trending topics or error
-   */
-  public async getTrendingTopics(woeid: number = 1): Promise<any | ApiRequestError> {
-    try {
-      const client = this.getClient();
-      const result = await client.v1.trendsAvailable();
-      return result;
-    } catch (error: unknown) {
-      // @ts-ignore
-      return error;
-    }
-  }
+  // /**
+  //  * Get trending topics for a specific location
+  //  * @param woeid The "Where On Earth ID" (WOEID) for the location (e.g., 1 for worldwide)
+  //  * @returns Promise resolving to trending topics or error
+  //  */
+  // public async getTrendingTopics(woeid: number = 1): Promise<any | ApiRequestError> {
+  //   try {
+  //     const client = this.getClient();
+  //     const result = await client.tweets.
+  //     const result = await client.v1.trendsAvailable();
+  //     return result;
+  //   } catch (error: unknown) {
+  //     // @ts-ignore
+  //     return error;
+  //   }
+  // }
 
   /**
    * Create a new list
@@ -387,14 +457,19 @@ export class TwitterService {
    * @param isPrivate Whether the list should be private (default: false)
    * @returns Promise resolving to the created list data or error
    */
-  public async createList(name: string, description?: string, isPrivate: boolean = false): Promise<ListV2 | ApiRequestError> {
+  public async createList(name: string, description?: string, isPrivate: boolean = false): Promise<any> {
     try {
       const client = this.getClient();
-      const result = await client.v2.createList({
+      const result = await client.lists.listIdCreate({
         name,
         description,
         private: isPrivate,
-      });
+      })
+      // const result = await client.v2.createList({
+      //   name,
+      //   description,
+      //   private: isPrivate,
+      // });
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -408,12 +483,13 @@ export class TwitterService {
    * @param userId The ID of the user to add
    * @returns Promise resolving to the response data or error
    */
-  public async addListMember(listId: string, userId: string): Promise<{
-    is_member: boolean;
-  } | ApiRequestError> {
+  public async addListMember(listId: string, userId: string): Promise<any> {
     try {
       const client = this.getClient();
-      const result = await client.v2.addListMember(listId, userId);
+      const result = await client.lists.listAddMember(listId, {
+        user_id: userId,
+      });
+      // const result = await client.v2.addListMember(listId, userId);
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -427,12 +503,11 @@ export class TwitterService {
    * @param userId The ID of the user to remove
    * @returns Promise resolving to the response data or error
    */
-  public async removeListMember(listId: string, userId: string): Promise<{
-    is_member: boolean;
-  } | ApiRequestError> {
+  public async removeListMember(listId: string, userId: string): Promise<any> {
     try {
       const client = this.getClient();
-      const result = await client.v2.removeListMember(listId, userId);
+      const result = await client.lists.listRemoveMember(listId, userId);
+      // const result = await client.v2.removeListMember(listId, userId);
       return result.data;
     } catch (error: unknown) {
       // @ts-ignore
@@ -444,12 +519,16 @@ export class TwitterService {
    * Get lists owned by the authenticated user
    * @returns Promise resolving to an array of lists or error
    */
-  public async getOwnedLists(): Promise<ListV2[] | ApiRequestError> {
+  public async getOwnedLists(): Promise<any> {
     try {
       const client = this.getClient();
-      const me = await client.v2.me();
-      const result = await client.v2.listsOwned(me.data.id);
-      return result.data.data;
+      const me = await client.users.findMyUser();
+      if (!me.data?.id) {
+        throw new Error("Authenticated user ID not found.");
+      }
+      const result = await client.lists.listUserOwnedLists(me.data.id);
+      // const result = await client.v2.listsOwned(me.data.id);
+      return result.data || [];
     } catch (error: unknown) {
       // @ts-ignore
       return error;
