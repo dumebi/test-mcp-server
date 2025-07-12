@@ -15,3 +15,6 @@ coverage/
 *.log
 *.tsbuildinfo
 *.d.ts
+
+user-credentials.json
+user-sessions.json

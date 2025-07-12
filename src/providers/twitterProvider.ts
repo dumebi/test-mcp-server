@@ -6,6 +6,7 @@ import { ApiRequestError, TweetV2, TweetV2PaginableTimelineResult, TwitterApi, U
  */
 
 export interface GetTokenResponse {
+  username: string | undefined;
   refresh_token?: string;
   access_token?: string;
   token_type?: string;

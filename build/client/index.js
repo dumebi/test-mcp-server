@@ -1,4 +1,17 @@
-// Anthropic SDK
+// Extensible Multi-User MCP Client - Provider-agnostic design
+// import { Anthropic } from "@anthropic-ai/sdk";
+// import {
+//     MessageParam,
+//     Tool,
+// } from "@anthropic-ai/sdk/resources/messages/messages.mjs";
+// import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+// import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+// import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+// import { v4 as uuidv4 } from 'uuid';
+// import * as fs from 'fs';
+// import * as path from 'path';
+// import dotenv from "dotenv";
+// dotenv.config();
 import { Anthropic } from "@anthropic-ai/sdk";
 // MCP Client
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -14,7 +27,6 @@ import dotenv from "dotenv";
 import * as fs from 'fs';
 import * as path from 'path';
 import pkg from '@slack/oauth';
-import { createEventAdapter } from '@slack/events-api';
 import axios from "axios";
 const { InstallProvider, LogLevel, FileInstallationStore } = pkg;
 dotenv.config();
@@ -23,22 +35,144 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (!ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY is not set");
 }
-class MCPClient {
+class ExtensibleMCPClient {
     llm;
-    servers = new Map();
-    toolToServerMap = new Map(); // Maps tool name to server name
+    userCredentials = new Map();
+    serverPools = new Map(); // provider -> accountKey -> config
+    sessions = new Map();
+    toolToServerMap = new Map();
+    providerConfigs = new Map();
     tools = [];
-    sessionsFilePath;
+    credentialsStore;
+    sessionsStore;
     systemPrompt = '';
     constructor() {
         this.llm = new Anthropic({
-            apiKey: ANTHROPIC_API_KEY,
+            apiKey: process.env.ANTHROPIC_API_KEY,
         });
-        // Initialize server configurations
-        this.initializeServers();
-        this.sessionsFilePath = path.join(process.cwd(), 'sessions.json');
-        this.initializeSessionsFile();
+        this.credentialsStore = path.join(process.cwd(), 'user-credentials.json');
+        this.sessionsStore = path.join(process.cwd(), 'user-sessions.json');
+        this.initializeStores();
         this.loadSystemPrompt();
+        this.loadCredentials();
+        this.loadSessions();
+        this.initializeProviders();
+        this.initializeServerPools();
+    }
+    // Initialize provider configurations - extensible like your original initializeServers
+    initializeProviders() {
+        // Google provider
+        this.providerConfigs.set('google', {
+            name: 'google',
+            serverConfig: {
+                serverScriptPath: "./build/servers/google.js"
+            },
+            toolPrefix: 'laura-mcp:',
+            envMapping: (creds) => ({
+                "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
+                "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
+                "GOOGLE_REFRESH_TOKEN": creds.refreshToken || ""
+            })
+        });
+        // Twitter provider
+        this.providerConfigs.set('twitter', {
+            name: 'twitter',
+            serverConfig: {
+                serverScriptPath: "./build/servers/twitter.js"
+            },
+            toolPrefix: 'laura-twitter:',
+            envMapping: (creds) => ({
+                "TWITTER_ACCESS_TOKEN": creds.accessToken || "",
+                "TWITTER_API_KEY": process.env.TWITTER_API_KEY || "",
+                "TWITTER_API_KEY_SECRET": process.env.TWITTER_API_KEY_SECRET || ""
+            })
+        });
+        // Notion provider
+        this.providerConfigs.set('notion', {
+            name: 'notion',
+            serverConfig: {
+                command: "npx",
+                args: ["-y", "@notionhq/notion-mcp-server"]
+            },
+            toolPrefix: 'notionApi:',
+            envMapping: (creds) => ({
+                "OPENAPI_MCP_HEADERS": JSON.stringify({
+                    "Authorization": `Bearer ${creds.accessToken}`,
+                    "Notion-Version": "2022-06-28"
+                })
+            })
+        });
+        // GitHub provider
+        this.providerConfigs.set('github', {
+            name: 'github',
+            serverConfig: {
+                command: "npx",
+                args: ["-y", "@modelcontextprotocol/server-github"]
+            },
+            toolPrefix: 'github:',
+            envMapping: (creds) => ({
+                "GITHUB_PERSONAL_ACCESS_TOKEN": creds.accessToken || ""
+            })
+        });
+        // Slack provider
+        this.providerConfigs.set('slack', {
+            name: 'slack',
+            serverConfig: {
+                serverScriptPath: "./build/servers/slack.js"
+            },
+            toolPrefix: 'slack-mcp:',
+            envMapping: (creds) => ({
+                "SLACK_BOT_TOKEN": creds.accessToken || "",
+                "SLACK_TEAM_ID": creds.teamId || ""
+            })
+        });
+        // Time provider (shared)
+        this.providerConfigs.set('time', {
+            name: 'time',
+            serverConfig: {
+                serverScriptPath: "./build/servers/time.js"
+            },
+            toolPrefix: 'laura-time:',
+            envMapping: () => ({}),
+            isShared: true
+        });
+        // Playwright provider (shared)
+        // this.providerConfigs.set('playwright', {
+        //     name: 'playwright',
+        //     serverConfig: {
+        //         command: "npx",
+        //         args: ["@playwright/mcp@latest"]
+        //     },
+        //     toolPrefix: 'playwright:',
+        //     envMapping: () => ({}),
+        //     isShared: true
+        // });
+        // Brave Search provider (shared)
+        // this.providerConfigs.set('brave-search', {
+        //     name: 'brave-search',
+        //     serverConfig: {
+        //         serverScriptPath: "./build/servers/brave-search.js"
+        //     },
+        //     toolPrefix: 'brave-search:',
+        //     envMapping: () => ({
+        //         "BRAVE_API_KEY": process.env.BRAVE_API_KEY || ""
+        //     }),
+        //     isShared: true
+        // });
+        console.log(`🔧 Initialized ${this.providerConfigs.size} provider configurations`);
+    }
+    // Method to easily add new providers - just like your addServer method
+    addProvider(providerName, config) {
+        this.providerConfigs.set(providerName, config);
+        this.serverPools.set(providerName, new Map());
+        console.log(`➕ Added provider: ${providerName}`);
+    }
+    async initializeStores() {
+        [this.credentialsStore, this.sessionsStore].forEach(file => {
+            if (!fs.existsSync(file)) {
+                fs.writeFileSync(file, '{}', 'utf8');
+            }
+        });
     }
     loadSystemPrompt() {
         try {
@@ -48,334 +182,480 @@ class MCPClient {
         }
         catch (error) {
             console.error('❌ Failed to load system prompt file:', error);
-            // Fallback to a basic prompt if file doesn't exist
             this.systemPrompt = 'You are Laura, a professional executive assistant. Provide helpful, accurate, and professional assistance.';
         }
     }
-    async initializeSessionsFile() {
+    async loadCredentials() {
         try {
-            await fs.accessSync(this.sessionsFilePath);
+            const data = fs.readFileSync(this.credentialsStore, 'utf8');
+            const credentials = JSON.parse(data);
+            Object.entries(credentials).forEach(([userId, creds]) => {
+                this.userCredentials.set(userId, creds);
+            });
+            console.log(`📋 Loaded credentials for ${this.userCredentials.size} users`);
         }
-        catch {
-            // File doesn't exist, create it
-            await fs.writeFileSync(this.sessionsFilePath, '{}', 'utf8');
+        catch (error) {
+            console.log('📋 No existing credentials file found, starting fresh');
         }
+    }
+    async saveCredentials() {
+        const credentialsObj = Object.fromEntries(this.userCredentials);
+        fs.writeFileSync(this.credentialsStore, JSON.stringify(credentialsObj, null, 2));
     }
     async loadSessions() {
         try {
-            const data = await fs.readFileSync(this.sessionsFilePath, 'utf8');
-            return JSON.parse(data);
-        }
-        catch (error) {
-            console.error('Error loading sessions:', error);
-            return {};
-        }
-    }
-    async saveSessions(sessions) {
-        try {
-            await fs.writeFileSync(this.sessionsFilePath, JSON.stringify(sessions, null, 2), 'utf8');
-        }
-        catch (error) {
-            console.error('Error saving sessions:', error);
-        }
-    }
-    async getSessionMessages(sessionId) {
-        const sessions = await this.loadSessions();
-        return sessions[sessionId] || [];
-    }
-    async updateSessionMessages(sessionId, messages) {
-        const sessions = await this.loadSessions();
-        sessions[sessionId] = messages;
-        await this.saveSessions(sessions);
-    }
-    getSystemPrompt() {
-        return this.systemPrompt;
-    }
-    initializeServers() {
-        // Laura Google MCP Server
-        this.servers.set('laura-google', {
-            name: 'laura-google',
-            client: new Client({
-                name: "laura-google",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                serverScriptPath: "./build/servers/google.js", // Path to the server script
-                env: {
-                    "GOOGLE_CLIENT_ID": process.env.GOOGLE_CLIENT_ID || "",
-                    "GOOGLE_CLIENT_SECRET": process.env.GOOGLE_CLIENT_SECRET || "",
-                    "GOOGLE_REFRESH_TOKEN": process.env.GOOGLE_REFRESH_TOKEN || ""
-                }
-            },
-            toolPrefix: 'laura-mcp:', // Tools from this server start with this prefix
-            isConnected: false
-        });
-        this.servers.set('laura-twitter', {
-            name: 'laura-twitter',
-            client: new Client({
-                name: "laura-twitter",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                serverScriptPath: "./build/servers/twitter.js", // Path to the server script
-                env: {
-                    "TWITTER_ACCESS_TOKEN": process.env.TWITTER_ACCESS_TOKEN || "",
-                    "TWITTER_API_KEY": process.env.TWITTER_API_KEY || "",
-                    "TWITTER_API_KEY_SECRET": process.env.TWITTER_API_KEY_SECRET || ""
-                }
-            },
-            toolPrefix: 'laura-mcp:', // Tools from this server start with this prefix
-            isConnected: false
-        });
-        this.servers.set('laura-time', {
-            name: 'laura-time',
-            client: new Client({
-                name: "laura-time",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                serverScriptPath: "./build/servers/time.js", // Path to the server script
-            },
-            toolPrefix: 'laura-time:', // Tools from this server start with this prefix
-            isConnected: false
-        });
-        // Notion MCP Server
-        this.servers.set('notion', {
-            name: 'notion',
-            client: new Client({
-                name: "laura-notion",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                command: "npx",
-                args: ["-y", "@notionhq/notion-mcp-server"],
-                env: {
-                    "OPENAPI_MCP_HEADERS": process.env.OPENAPI_MCP_HEADERS || "",
-                }
-            },
-            toolPrefix: 'notionApi:',
-            isConnected: false
-        });
-        this.servers.set('graphiti', {
-            name: 'graphiti',
-            client: new Client({
-                name: "laura-graphiti",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                transort: "sse",
-                url: process.env.GRAPHITI_MCP_URL || "http://localhost:8000/sse"
-            },
-            toolPrefix: 'graphiti:',
-            isConnected: false
-        });
-        // GitHub MCP Server
-        this.servers.set('github', {
-            name: 'github',
-            client: new Client({
-                name: "laura-github",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-github"],
-                env: {
-                    "GITHUB_PERSONAL_ACCESS_TOKEN": process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "",
-                }
-            },
-            toolPrefix: 'github:',
-            isConnected: false
-        });
-        // GitHub MCP Server
-        this.servers.set('playwright', {
-            name: 'playwright',
-            client: new Client({
-                name: "laura-playwright",
-                version: "1.0.0"
-            }, {
-                capabilities: { tools: {} }
-            }),
-            transport: null,
-            connection: {
-                command: "npx",
-                args: ["@playwright/mcp@latest"]
-            },
-            toolPrefix: 'playwright:',
-            isConnected: false
-        });
-    }
-    // Method to easily add new servers
-    addServer(serverName, config) {
-        this.servers.set(serverName, {
-            ...config,
-            name: serverName,
-            transport: null,
-            isConnected: false
-        });
-    }
-    async connectToServer() {
-        try {
-            // Set up Laura Google server connection if script path provided
-            // if (serverScriptPath) {
-            //     const isJs = serverScriptPath.endsWith(".js");
-            //     const isPy = serverScriptPath.endsWith(".py");
-            //     if (!isJs && !isPy) {
-            //         throw new Error("Server script must be a .js or .py file");
-            //     }
-            //     const command = isPy
-            //         ? process.platform === "win32" ? "python" : "python3"
-            //         : process.execPath;
-            //     const lauraServer = this.servers.get('laura-google')!;
-            //     lauraServer.connection.command = command;
-            //     lauraServer.connection.args = [serverScriptPath];
-            // }
-            // Connect to all servers
-            const connectionPromises = Array.from(this.servers.entries()).map(async ([serverName, config]) => {
-                try {
-                    // Skip laura-google if no script path provided
-                    // if (serverName === 'laura-google' && !serverScriptPath) {
-                    //     console.log(`Skipping ${serverName} - no script path provided`);
-                    //     return;
-                    // }
-                    if (config.connection.serverScriptPath) {
-                        const isJs = config.connection.serverScriptPath.endsWith(".js");
-                        const isPy = config.connection.serverScriptPath.endsWith(".py");
-                        if (!isJs && !isPy) {
-                            throw new Error("Server script must be a .js or .py file");
-                        }
-                        const command = isPy
-                            ? process.platform === "win32" ? "python" : "python3"
-                            : process.execPath;
-                        config.connection.command = command;
-                        config.connection.args = [config.connection.serverScriptPath];
-                    }
-                    console.log(`Connecting to ${serverName}...`);
-                    if (config.connection.transort === "sse") {
-                        // Create SSE transport
-                        config.transport = new SSEClientTransport(new URL(config.connection.url || ""), {});
-                    }
-                    else {
-                        // Default to Stdio transport if not specified
-                        config.transport = new StdioClientTransport({
-                            command: config.connection.command || "npx",
-                            args: config.connection.args,
-                            env: Object.fromEntries(Object.entries({
-                                ...process.env,
-                                ...config.connection.env
-                            }).filter(([_, v]) => typeof v === "string" && v !== undefined))
-                        });
-                    }
-                    // Connect client
-                    await config.client.connect(config.transport);
-                    config.isConnected = true;
-                    // Get tools from this server
-                    const toolsResult = await config.client.listTools();
-                    // Map tools to this server and add to global tools list
-                    toolsResult.tools.forEach(tool => {
-                        this.toolToServerMap.set(tool.name, serverName);
-                        this.tools.push({
-                            name: tool.name,
-                            description: tool.description,
-                            input_schema: tool.inputSchema,
-                        });
-                    });
-                    console.log(`✅ Connected to ${serverName} with ${toolsResult.tools.length} tools`);
-                }
-                catch (error) {
-                    console.error(`❌ Failed to connect to ${serverName}:`, error);
-                    config.isConnected = false;
-                    // Continue with other servers even if one fails
-                }
+            const data = fs.readFileSync(this.sessionsStore, 'utf8');
+            const sessions = JSON.parse(data);
+            Object.values(sessions).forEach((session) => {
+                session.lastActivity = new Date(session.lastActivity);
+                this.sessions.set(session.sessionId, session);
             });
-            await Promise.allSettled(connectionPromises);
-            console.log("📊 Connected servers:", Array.from(this.servers.entries())
-                .filter(([_, config]) => config.isConnected)
-                .map(([name]) => name));
+            console.log(`💬 Loaded ${this.sessions.size} active sessions`);
         }
-        catch (e) {
-            console.log("Failed to connect to MCP servers: ", e);
-            throw e;
+        catch (error) {
+            console.log('💬 No existing sessions file found, starting fresh');
         }
     }
-    // Method to get the appropriate client for a tool
-    getClientForTool(toolName) {
-        const serverName = this.toolToServerMap.get(toolName);
-        if (!serverName) {
-            // Fallback: try to match by prefix
-            for (const [name, config] of this.servers.entries()) {
-                if (config.toolPrefix && toolName.startsWith(config.toolPrefix)) {
-                    return config.client;
+    async saveSessions() {
+        const sessionsObj = Object.fromEntries(this.sessions);
+        fs.writeFileSync(this.sessionsStore, JSON.stringify(sessionsObj, null, 2));
+    }
+    initializeServerPools() {
+        // Initialize empty pools for each provider
+        this.providerConfigs.forEach((config, providerName) => {
+            this.serverPools.set(providerName, new Map());
+        });
+    }
+    // Smart account ID generation based on provider and credentials
+    generateAccountId(provider, credentials) {
+        // Use email as primary identifier if available
+        if (credentials.email) {
+            return credentials.email.toLowerCase();
+        }
+        // Use username for platforms like Twitter, GitHub
+        if (credentials.username) {
+            return credentials.username.toLowerCase();
+        }
+        // Use teamId for team-based platforms like Slack
+        if (credentials.teamId) {
+            return credentials.teamId;
+        }
+        // Use workspaceId for workspace-based platforms like Notion
+        if (credentials.workspaceId) {
+            return credentials.workspaceId;
+        }
+        // Fallback to accountType + timestamp
+        return `${credentials.accountType || 'account'}-${Date.now()}`;
+    }
+    // Smart account type detection based on email domain
+    detectAccountType(credentials) {
+        if (credentials.accountType) {
+            return credentials.accountType;
+        }
+        if (credentials.email) {
+            const domain = credentials.email.split('@')[1]?.toLowerCase();
+            // Common personal email domains
+            const personalDomains = [
+                'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+                'icloud.com', 'me.com', 'aol.com', 'protonmail.com'
+            ];
+            if (personalDomains.includes(domain)) {
+                return 'personal';
+            }
+            // Everything else is likely work/business
+            return 'work';
+        }
+        return 'other';
+    }
+    // Generate display name for account
+    generateDisplayName(provider, credentials) {
+        if (credentials.displayName) {
+            return credentials.displayName;
+        }
+        const accountType = this.detectAccountType(credentials);
+        const typeLabel = accountType === 'personal' ? 'Personal' :
+            accountType === 'work' ? 'Work' :
+                accountType === 'business' ? 'Business' : '';
+        if (credentials.email) {
+            return typeLabel ? `${typeLabel} (${credentials.email})` : credentials.email;
+        }
+        if (credentials.username) {
+            return typeLabel ? `${typeLabel} @${credentials.username}` : `@${credentials.username}`;
+        }
+        return typeLabel ? `${typeLabel} ${provider}` : `${provider} account`;
+    }
+    // PUBLIC API: Set credentials for a user and provider (supports multiple accounts)
+    async setUserCredentials(userId, provider, credentials) {
+        // Auto-detect account type and generate account ID
+        credentials.accountType = this.detectAccountType(credentials);
+        const accountId = this.generateAccountId(provider, credentials);
+        credentials.accountId = accountId;
+        credentials.displayName = this.generateDisplayName(provider, credentials);
+        let userCreds = this.userCredentials.get(userId) || {
+            userId,
+            providers: {}
+        };
+        // Initialize provider if it doesn't exist
+        if (!userCreds.providers[provider]) {
+            userCreds.providers[provider] = {};
+        }
+        // Check if this is an update or new account
+        const isNew = !userCreds.providers[provider][accountId];
+        // Store credentials
+        userCreds.providers[provider][accountId] = credentials;
+        this.userCredentials.set(userId, userCreds);
+        await this.saveCredentials();
+        console.log(`🔐 ${isNew ? 'Added' : 'Updated'} ${provider} account ${accountId} for user ${userId} (${credentials.accountType})`);
+        // Create server connection for this user/provider/account
+        await this.createUserServerConnection(userId, provider, accountId);
+        return { accountId, isNew };
+    }
+    // PUBLIC API: Connect to all servers - like your original connectToServer
+    async connectToServer() {
+        console.log('🔄 Connecting to MCP servers...');
+        // Connect shared providers first
+        await this.connectSharedProviders();
+        // Connect user-specific providers
+        for (const [userId, userCreds] of this.userCredentials) {
+            for (const [providerName, accounts] of Object.entries(userCreds.providers)) {
+                for (const accountId of Object.keys(accounts)) {
+                    await this.createUserServerConnection(userId, providerName, accountId);
                 }
             }
-            throw new Error(`No server found for tool: ${toolName}`);
         }
-        const server = this.servers.get(serverName);
-        if (!server || !server.isConnected) {
-            throw new Error(`Server ${serverName} is not connected for tool: ${toolName}`);
-        }
-        return server.client;
+        await this.updateToolsList();
+        console.log(`📊 Total tools available: ${this.tools.length}`);
+        this.logServerStatus();
     }
-    // NEW: SSE-enabled query processing method
-    async processQuerySSE(query, sessionId, sendEvent) {
+    async connectSharedProviders() {
+        for (const [providerName, config] of this.providerConfigs) {
+            if (config.isShared) {
+                await this.createSharedServerConnection(providerName, config);
+            }
+        }
+    }
+    async createSharedServerConnection(providerName, config) {
+        const serverConfig = {
+            name: config.name,
+            client: new Client({
+                name: config.name,
+                version: "1.0.0"
+            }, { capabilities: { tools: {} } }),
+            transport: null,
+            connection: {
+                command: config.serverConfig.command || (config.serverConfig.serverScriptPath ? process.execPath : "npx"),
+                args: config.serverConfig.args || (config.serverConfig.serverScriptPath ? [config.serverConfig.serverScriptPath] : []),
+                env: config.envMapping({}),
+                transport: config.serverConfig.transport,
+                url: config.serverConfig.url,
+                serverScriptPath: config.serverConfig.serverScriptPath
+            },
+            toolPrefix: config.toolPrefix,
+            isConnected: false,
+            provider: providerName
+        };
         try {
-            // Generate new session ID if not provided
-            if (!sessionId) {
-                sessionId = uuidv4();
-                console.log(`Created new session: ${sessionId}`);
-                sendEvent({
-                    type: 'session_created',
-                    data: { sessionId },
-                    sessionId
-                });
+            if (serverConfig.connection.transport === "sse") {
+                serverConfig.transport = new SSEClientTransport(new URL(serverConfig.connection.url || ""), {});
             }
             else {
-                console.log(`Using existing session: ${sessionId}`);
+                serverConfig.transport = new StdioClientTransport({
+                    command: serverConfig.connection.command || "npx",
+                    args: serverConfig.connection.args,
+                    env: Object.fromEntries(Object.entries({
+                        ...process.env,
+                        ...serverConfig.connection.env
+                    }).filter(([_, v]) => typeof v === 'string' && v !== undefined)
+                        .map(([k, v]) => [k, v]))
+                });
             }
-            // Load existing messages for this session or start fresh
-            let messages = await this.getSessionMessages(sessionId);
-            // Add the new user query
-            messages.push({
-                role: "user",
-                content: query
+            await serverConfig.client.connect(serverConfig.transport);
+            serverConfig.isConnected = true;
+            const providerPool = this.serverPools.get(providerName);
+            providerPool.set('shared', serverConfig);
+            console.log(`✅ Connected shared ${providerName} server`);
+        }
+        catch (error) {
+            console.error(`❌ Failed to connect shared ${providerName} server:`, error);
+        }
+    }
+    async createUserServerConnection(userId, providerName, accountId) {
+        const userCreds = this.userCredentials.get(userId);
+        const providerConfig = this.providerConfigs.get(providerName);
+        if (!userCreds?.providers[providerName]?.[accountId] || !providerConfig)
+            return;
+        const providerPool = this.serverPools.get(providerName);
+        if (!providerPool)
+            return;
+        const credentials = userCreds.providers[providerName][accountId];
+        const accountKey = `${userId}:${accountId}`; // Unique key for this user+account combo
+        const serverConfig = {
+            name: `${providerName}-${userId}-${accountId}`,
+            client: new Client({
+                name: `${providerName}-${userId}-${accountId}`,
+                version: "1.0.0"
+            }, { capabilities: { tools: {} } }),
+            transport: null,
+            connection: {
+                command: providerConfig.serverConfig.command || (providerConfig.serverConfig.serverScriptPath ? process.execPath : "npx"),
+                args: providerConfig.serverConfig.args || (providerConfig.serverConfig.serverScriptPath ? [providerConfig.serverConfig.serverScriptPath] : []),
+                env: providerConfig.envMapping(credentials),
+                transport: providerConfig.serverConfig.transport,
+                url: providerConfig.serverConfig.url,
+                serverScriptPath: providerConfig.serverConfig.serverScriptPath
+            },
+            toolPrefix: providerConfig.toolPrefix,
+            isConnected: false,
+            userId,
+            provider: providerName
+        };
+        try {
+            if (serverConfig.connection.transport === "sse") {
+                serverConfig.transport = new SSEClientTransport(new URL(serverConfig.connection.url || ""), {});
+            }
+            else {
+                serverConfig.transport = new StdioClientTransport({
+                    command: serverConfig.connection.command || "npx",
+                    args: serverConfig.connection.args,
+                    env: Object.fromEntries(Object.entries({
+                        ...process.env,
+                        ...serverConfig.connection.env
+                    })
+                        .filter(([_, v]) => typeof v === 'string' && v !== undefined)
+                        .map(([k, v]) => [k, v]))
+                });
+            }
+            await serverConfig.client.connect(serverConfig.transport);
+            serverConfig.isConnected = true;
+            providerPool.set(accountKey, serverConfig);
+            console.log(`✅ Connected ${providerName}:${accountId} for user ${userId}`);
+        }
+        catch (error) {
+            console.error(`❌ Failed to connect ${providerName}:${accountId} for user ${userId}:`, error);
+        }
+    }
+    async updateToolsList() {
+        this.tools = [];
+        this.toolToServerMap.clear();
+        const toolPromises = [];
+        this.serverPools.forEach((providerPool, providerName) => {
+            providerPool.forEach((serverConfig, accountKey) => {
+                if (serverConfig.isConnected) {
+                    const promise = this.getToolsFromServer(serverConfig).then(tools => {
+                        tools.forEach(tool => {
+                            this.toolToServerMap.set(tool.name, {
+                                provider: providerName,
+                                accountKey: accountKey === 'shared' ? undefined : accountKey
+                            });
+                            this.tools.push(tool);
+                        });
+                    });
+                    toolPromises.push(promise);
+                }
             });
-            const finalText = [];
-            let iterationCount = 0;
-            while (true) {
-                iterationCount++;
-                console.log(`Processing iteration ${iterationCount} with ${messages.length} messages`);
-                // sendEvent({
-                //     type: 'thinking',
-                //     data: { 
-                //         message: `Processing your request... (Step ${iterationCount})`,
-                //         iteration: iterationCount, 
-                //         messageCount: messages.length 
-                //     },
-                //     sessionId
-                // });
-                let response = await this.llm.messages.create({
+        });
+        await Promise.allSettled(toolPromises);
+    }
+    async getToolsFromServer(serverConfig) {
+        try {
+            const toolsResult = await serverConfig.client.listTools();
+            return toolsResult.tools.map(tool => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.inputSchema,
+            }));
+        }
+        catch (error) {
+            console.error(`Error getting tools from ${serverConfig.name}:`, error);
+            return [];
+        }
+    }
+    // Enhanced system prompt with user context
+    getSystemPromptWithContext(sessionContext) {
+        const userCreds = this.userCredentials.get(sessionContext.userId);
+        if (!userCreds || Object.keys(userCreds.providers).length === 0) {
+            return this.systemPrompt + '\n\nNo authenticated accounts available.';
+        }
+        let accountContext = `\n\nConnected accounts for this user:`;
+        Object.entries(userCreds.providers).forEach(([providerName, accounts]) => {
+            accountContext += `\n${providerName}:`;
+            Object.entries(accounts).forEach(([accountId, creds]) => {
+                accountContext += `\n  - ${creds.displayName} (${creds.accountType})`;
+            });
+        });
+        const activeProviders = Object.entries(sessionContext.activeProviders)
+            .filter(([_, accountId]) => accountId)
+            .map(([provider, accountId]) => `${provider}: ${accountId}`);
+        if (activeProviders.length > 0) {
+            accountContext += `\n\nCurrently active accounts: ${activeProviders.join(', ')}`;
+        }
+        accountContext += `\n\nWhen a user mentions account preferences (like "use my work email" or "personal Twitter"), automatically select the appropriate account based on email domain or account type. If unclear which account to use, ask for clarification.`;
+        return this.systemPrompt + accountContext;
+    }
+    // Smart account selection with multiple account support
+    async selectAccountForProvider(userId, provider, context) {
+        const providerPool = this.serverPools.get(provider);
+        if (!providerPool)
+            return null;
+        // Check if there's an active account already
+        if (context.sessionContext?.activeProviders[provider]) {
+            const activeAccountId = context.sessionContext.activeProviders[provider];
+            const accountKey = `${userId}:${activeAccountId}`;
+            if (providerPool.get(accountKey)?.isConnected) {
+                return activeAccountId;
+            }
+        }
+        // For shared providers, use 'shared'
+        const providerConfig = this.providerConfigs.get(provider);
+        if (providerConfig?.isShared) {
+            const sharedServer = providerPool.get('shared');
+            return sharedServer?.isConnected ? 'shared' : null;
+        }
+        // Get all user's accounts for this provider
+        const userCreds = this.userCredentials.get(userId);
+        const userAccounts = userCreds?.providers[provider];
+        if (!userAccounts)
+            return null;
+        // If only one account, use it
+        const accountIds = Object.keys(userAccounts);
+        if (accountIds.length === 1) {
+            const accountId = accountIds[0];
+            const accountKey = `${userId}:${accountId}`;
+            return providerPool.get(accountKey)?.isConnected ? accountId : null;
+        }
+        // Multiple accounts - use smart selection based on query
+        if (context.query) {
+            const query = context.query.toLowerCase();
+            // Check for explicit account type mentions
+            if (query.includes('work') || query.includes('business') || query.includes('office')) {
+                const workAccount = accountIds.find(id => userAccounts[id].accountType === 'work');
+                if (workAccount) {
+                    const accountKey = `${userId}:${workAccount}`;
+                    return providerPool.get(accountKey)?.isConnected ? workAccount : null;
+                }
+            }
+            if (query.includes('personal') || query.includes('private')) {
+                const personalAccount = accountIds.find(id => userAccounts[id].accountType === 'personal');
+                if (personalAccount) {
+                    const accountKey = `${userId}:${personalAccount}`;
+                    return providerPool.get(accountKey)?.isConnected ? personalAccount : null;
+                }
+            }
+            // Check for specific email mentions in query
+            const emailMatch = query.match(/(\w+@[\w.-]+)/);
+            if (emailMatch) {
+                const mentionedEmail = emailMatch[1].toLowerCase();
+                const emailAccount = accountIds.find(id => userAccounts[id].email?.toLowerCase() === mentionedEmail);
+                if (emailAccount) {
+                    const accountKey = `${userId}:${emailAccount}`;
+                    return providerPool.get(accountKey)?.isConnected ? emailAccount : null;
+                }
+            }
+            // Check for domain-based selection
+            if (provider === 'google') {
+                // Extract domain hints from query
+                const domainMatches = query.match(/@([\w.-]+)/g);
+                if (domainMatches) {
+                    for (const domainMatch of domainMatches) {
+                        const domain = domainMatch.substring(1).toLowerCase();
+                        const domainAccount = accountIds.find(id => userAccounts[id].email?.toLowerCase().includes(domain));
+                        if (domainAccount) {
+                            const accountKey = `${userId}:${domainAccount}`;
+                            return providerPool.get(accountKey)?.isConnected ? domainAccount : null;
+                        }
+                    }
+                }
+            }
+        }
+        // Default to first connected account
+        for (const accountId of accountIds) {
+            const accountKey = `${userId}:${accountId}`;
+            if (providerPool.get(accountKey)?.isConnected) {
+                return accountId;
+            }
+        }
+        return null;
+    }
+    // Get client for tool with user context
+    async getClientForTool(toolName, sessionContext) {
+        const toolMapping = this.toolToServerMap.get(toolName);
+        if (!toolMapping) {
+            throw new Error(`No server mapping found for tool: ${toolName}`);
+        }
+        const { provider, accountKey } = toolMapping;
+        const providerPool = this.serverPools.get(provider);
+        if (!providerPool) {
+            throw new Error(`No server pool found for provider: ${provider}`);
+        }
+        // For shared tools, use the shared server
+        if (!accountKey) {
+            const sharedServer = providerPool.get('shared');
+            if (sharedServer?.isConnected) {
+                return sharedServer.client;
+            }
+            throw new Error(`Shared ${provider} server not available`);
+        }
+        console.log("selectAccountForProvider");
+        // For user-specific tools, select appropriate provider
+        const selectedProvider = await this.selectAccountForProvider(sessionContext.userId, provider, {
+            query: this.getLastUserMessage(sessionContext),
+            sessionContext
+        });
+        if (!selectedProvider) {
+            throw new Error(`No ${provider} provider available for user ${sessionContext.userId}`);
+        }
+        const userServer = providerPool.get(`${sessionContext.userId}:${selectedProvider}`);
+        if (!userServer?.isConnected) {
+            throw new Error(`${provider} provider ${selectedProvider} not connected`);
+        }
+        // Update active provider
+        if (selectedProvider !== 'shared') {
+            sessionContext.activeProviders[provider] = selectedProvider;
+        }
+        return userServer.client;
+    }
+    getLastUserMessage(sessionContext) {
+        const userMessages = sessionContext.messages.filter(m => m.role === 'user');
+        const lastMessage = userMessages[userMessages.length - 1];
+        return typeof lastMessage?.content === 'string' ? lastMessage.content : '';
+    }
+    // MAIN PUBLIC API: Process query with user context
+    async processQueryWithUser(query, userId, sessionId, sendEvent) {
+        if (!sessionId) {
+            sessionId = uuidv4();
+        }
+        let sessionContext = this.sessions.get(sessionId);
+        if (!sessionContext) {
+            sessionContext = {
+                sessionId,
+                userId,
+                activeProviders: {},
+                messages: [],
+                lastActivity: new Date()
+            };
+            this.sessions.set(sessionId, sessionContext);
+            sendEvent?.({
+                type: 'session_created',
+                data: { sessionId, userId },
+                sessionId
+            });
+        }
+        sessionContext.lastActivity = new Date();
+        sessionContext.messages.push({
+            role: "user",
+            content: query
+        });
+        const finalText = [];
+        let iterationCount = 0;
+        while (true) {
+            iterationCount++;
+            try {
+                const response = await this.llm.messages.create({
                     model: "claude-3-7-sonnet-latest",
                     max_tokens: 1000,
                     stream: false,
-                    messages: messages,
-                    system: this.getSystemPrompt(),
+                    messages: sessionContext.messages,
+                    system: this.getSystemPromptWithContext(sessionContext),
                     tools: this.tools
                 });
                 const assistantContent = [];
@@ -383,311 +663,372 @@ class MCPClient {
                 for (const content of response.content) {
                     assistantContent.push(content);
                     if (content.type === 'text') {
-                        console.log("Text content:", content.text);
                         finalText.push(content.text);
-                        // Stream text content by sentences for better UX
-                        const sentences = content.text.split(/(?<=[.!?])\s+/).filter(sentence => sentence.trim().length > 0);
-                        for (let i = 0; i < sentences.length; i++) {
-                            const sentence = sentences[i];
-                            sendEvent({
-                                type: 'text_chunk',
-                                data: {
-                                    chunk: sentence + (i < sentences.length - 1 ? ' ' : ''),
-                                    isComplete: i === sentences.length - 1,
-                                    progress: Math.round(((i + 1) / sentences.length) * 100),
-                                    sentenceNumber: i + 1,
-                                    totalSentences: sentences.length
-                                },
-                                sessionId
-                            });
-                            // Small delay for streaming effect (slightly longer for sentences)
-                            await new Promise(resolve => setTimeout(resolve, 80));
+                        if (sendEvent) {
+                            const sentences = content.text.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+                            for (const sentence of sentences) {
+                                sendEvent({
+                                    type: 'text_chunk',
+                                    data: { chunk: sentence + ' ' },
+                                    sessionId
+                                });
+                                await new Promise(resolve => setTimeout(resolve, 80));
+                            }
                         }
                     }
                     else if (content.type === 'tool_use') {
                         hasToolCalls = true;
-                        const toolName = content.name;
-                        const toolArgs = content.input;
-                        sendEvent({
+                        sendEvent?.({
                             type: 'tool_call',
                             data: {
-                                message: `Executing ${toolName}...`,
-                                toolName,
-                                toolArgs,
-                                toolId: content.id
+                                message: `Executing ${content.name}...`,
+                                toolName: content.name,
+                                toolArgs: content.input
                             },
                             sessionId
                         });
                         try {
-                            // Get the appropriate client for this tool
-                            const client = this.getClientForTool(toolName);
-                            // Execute tool call on the correct client
+                            const client = await this.getClientForTool(content.name, sessionContext);
                             const result = await client.callTool({
-                                name: toolName,
-                                arguments: toolArgs
+                                name: content.name,
+                                arguments: content.input
                             });
-                            console.log("Tool result:", result);
-                            sendEvent({
+                            sendEvent?.({
                                 type: 'tool_result',
                                 data: {
-                                    message: `${toolName} completed successfully`,
-                                    toolName,
-                                    toolId: content.id,
-                                    success: true,
-                                    result: result.content
+                                    message: `${content.name} completed successfully`,
+                                    toolName: content.name,
+                                    success: true
                                 },
                                 sessionId
                             });
-                            messages.push({
+                            sessionContext.messages.push({
                                 role: "assistant",
                                 content: assistantContent
                             });
-                            messages.push({
+                            sessionContext.messages.push({
                                 role: "user",
-                                content: [
-                                    {
+                                content: [{
                                         type: "tool_result",
                                         tool_use_id: content.id,
                                         content: result.content
-                                    }
-                                ]
+                                    }]
                             });
                         }
                         catch (error) {
                             console.error("Tool execution error:", error);
-                            sendEvent({
+                            sendEvent?.({
                                 type: 'tool_result',
                                 data: {
-                                    message: `Error executing ${toolName}`,
-                                    toolName,
-                                    toolId: content.id,
+                                    message: `Error executing ${content.name}: ${typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error)}`,
+                                    toolName: content.name,
                                     success: false,
-                                    error: error instanceof Error ? error.message : String(error)
+                                    error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error)
                                 },
                                 sessionId
                             });
-                            messages.push({
+                            sessionContext.messages.push({
                                 role: "assistant",
                                 content: assistantContent
                             });
-                            messages.push({
+                            sessionContext.messages.push({
                                 role: "user",
-                                content: [
-                                    {
+                                content: [{
                                         type: "tool_result",
                                         tool_use_id: content.id,
-                                        content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
+                                        content: `Error executing tool: ${typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error)}`,
                                         is_error: true
-                                    }
-                                ]
+                                    }]
                             });
                         }
                         break;
                     }
                 }
                 if (!hasToolCalls) {
-                    messages.push({
+                    sessionContext.messages.push({
                         role: "assistant",
                         content: assistantContent
                     });
                     break;
                 }
             }
-            // Save the updated messages to the session file
-            await this.updateSessionMessages(sessionId, messages);
-            sendEvent({
-                type: 'complete',
-                data: {
-                    message: 'Response completed',
-                    finalResponse: finalText.join("\n"),
-                    messageCount: messages.length,
-                    iterations: iterationCount
-                },
-                sessionId
-            });
-            return { sessionId };
-        }
-        catch (error) {
-            console.error('Error in processQuerySSE:', error);
-            sendEvent({
-                type: 'error',
-                data: {
-                    message: 'I apologize, but I encountered an error while processing your request.',
-                    error: error instanceof Error ? error.message : String(error)
-                },
-                sessionId
-            });
-            throw error;
-        }
-    }
-    // Original query processing method (unchanged)
-    async processQuery(query, sessionId) {
-        // Generate new session ID if not provided
-        if (!sessionId) {
-            sessionId = uuidv4();
-            console.log(`Created new session: ${sessionId}`);
-        }
-        else {
-            console.log(`Using existing session: ${sessionId}`);
-        }
-        // Load existing messages for this session or start fresh
-        let messages = await this.getSessionMessages(sessionId);
-        // Add the new user query
-        messages.push({
-            role: "user",
-            content: query
-        });
-        const finalText = [];
-        while (true) {
-            console.log("Sending messages to Claude:", messages.length, "messages");
-            let response = await this.llm.messages.create({
-                model: "claude-3-7-sonnet-latest",
-                max_tokens: 1000,
-                stream: false,
-                messages: messages,
-                system: this.getSystemPrompt(),
-                tools: this.tools
-            });
-            const assistantContent = [];
-            let hasToolCalls = false;
-            for (const content of response.content) {
-                assistantContent.push(content);
-                if (content.type === 'text') {
-                    console.log("Text content:", content.text);
-                    finalText.push(content.text);
-                }
-                else if (content.type === 'tool_use') {
-                    hasToolCalls = true;
-                    const toolName = content.name;
-                    const toolArgs = content.input;
-                    try {
-                        // Get the appropriate client for this tool
-                        const client = this.getClientForTool(toolName);
-                        // Execute tool call on the correct client
-                        const result = await client.callTool({
-                            name: toolName,
-                            arguments: toolArgs
-                        });
-                        console.log("Tool result:", result);
-                        messages.push({
-                            role: "assistant",
-                            content: assistantContent
-                        });
-                        messages.push({
-                            role: "user",
-                            content: [
-                                {
-                                    type: "tool_result",
-                                    tool_use_id: content.id,
-                                    content: result.content
-                                }
-                            ]
-                        });
-                    }
-                    catch (error) {
-                        console.error("Tool execution error:", error);
-                        messages.push({
-                            role: "assistant",
-                            content: assistantContent
-                        });
-                        messages.push({
-                            role: "user",
-                            content: [
-                                {
-                                    type: "tool_result",
-                                    tool_use_id: content.id,
-                                    content: `Error executing tool: ${error instanceof Error ? error.message : String(error)}`,
-                                    is_error: true
-                                }
-                            ]
-                        });
-                    }
-                    break;
-                }
-            }
-            if (!hasToolCalls) {
-                messages.push({
-                    role: "assistant",
-                    content: assistantContent
-                });
+            catch (error) {
+                console.error('Error in iteration:', error);
+                finalText.push('I apologize, but I encountered an error processing your request.');
                 break;
             }
         }
-        // Save the updated messages to the session file
-        await this.updateSessionMessages(sessionId, messages);
-        return {
-            response: finalText.join("\n"),
-            sessionId: sessionId
-        };
+        await this.saveSessions();
+        sendEvent?.({
+            type: 'complete',
+            data: {
+                message: 'Response completed',
+                finalResponse: finalText.join("\n"),
+                iterations: iterationCount
+            },
+            sessionId
+        });
+        return { sessionId };
     }
-    // Method to get all sessions
-    async getAllSessions() {
-        return await this.loadSessions();
+    // BACKWARD COMPATIBILITY METHODS
+    async processQuerySSE(query, sessionId, sendEvent) {
+        const defaultUserId = 'default';
+        return this.processQueryWithUser(query, defaultUserId, sessionId, sendEvent);
     }
-    // Method to get a specific session
-    async getSession(sessionId) {
-        const sessions = await this.loadSessions();
-        return sessions[sessionId] || null;
+    async processQuery(query, sessionId) {
+        const defaultUserId = 'default';
+        const result = await this.processQueryWithUser(query, defaultUserId, sessionId);
+        const session = this.sessions.get(result.sessionId);
+        const lastMessage = session?.messages[session.messages.length - 1];
+        const response = lastMessage?.role === 'assistant' && Array.isArray(lastMessage.content)
+            ? lastMessage.content.find(c => c.type === 'text')?.text || 'Response completed'
+            : 'Response completed';
+        return { response, sessionId: result.sessionId };
     }
-    // Method to delete a session
-    async deleteSession(sessionId) {
-        const sessions = await this.loadSessions();
-        if (sessions[sessionId]) {
-            delete sessions[sessionId];
-            await this.saveSessions(sessions);
-            return true;
-        }
-        return false;
-    }
-    // Method to clear all sessions
-    async clearAllSessions() {
-        await this.saveSessions({});
-    }
-    // Method to get session summary (useful for listing sessions)
-    async getSessionsSummary() {
-        const sessions = await this.loadSessions();
-        return Object.entries(sessions).map(([sessionId, messages]) => {
-            const lastMessage = messages[messages.length - 1];
-            return {
-                sessionId,
-                messageCount: messages.length,
-                lastMessage: lastMessage?.role === 'user'
-                    ? (typeof lastMessage.content === 'string' ? lastMessage.content : 'Complex message')
-                    : undefined,
-                timestamp: new Date().toISOString() // You might want to store actual timestamps
-            };
+    // Utility methods
+    logServerStatus() {
+        console.log('\n📊 Server Status:');
+        this.serverPools.forEach((providerPool, providerName) => {
+            const connectedCount = Array.from(providerPool.values()).filter(s => s.isConnected).length;
+            console.log(`  ${providerName}: ${connectedCount} connections`);
+            providerPool.forEach((server, accountKey) => {
+                if (server.isConnected) {
+                    if (accountKey === 'shared') {
+                        console.log(`    ✅ shared`);
+                    }
+                    else {
+                        const [userId, accountId] = accountKey.split(':');
+                        console.log(`    ✅ ${userId}:${accountId}`);
+                    }
+                }
+            });
         });
     }
-    // Method to check server status
     getServerStatus() {
         const status = {};
-        this.servers.forEach((config, name) => {
-            status[name] = config.isConnected;
+        this.serverPools.forEach((providerPool, providerName) => {
+            status[providerName] = {};
+            providerPool.forEach((server, accountKey) => {
+                status[providerName][accountKey] = server.isConnected;
+            });
         });
         return status;
     }
-    // Method to get tools by server
-    getToolsByServer() {
-        const toolsByServer = {};
-        this.toolToServerMap.forEach((serverName, toolName) => {
-            if (!toolsByServer[serverName]) {
-                toolsByServer[serverName] = [];
-            }
-            toolsByServer[serverName].push(toolName);
+    getUserProviders(userId) {
+        const userCreds = this.userCredentials.get(userId);
+        if (!userCreds)
+            return {};
+        const providers = {};
+        Object.entries(userCreds.providers).forEach(([providerName, accounts]) => {
+            providers[providerName] = {};
+            Object.entries(accounts).forEach(([accountId, creds]) => {
+                const accountKey = `${userId}:${accountId}`;
+                providers[providerName][accountId] = {
+                    displayName: creds.displayName,
+                    accountType: creds.accountType,
+                    email: creds.email,
+                    username: creds.username,
+                    connected: this.serverPools.get(providerName)?.get(accountKey)?.isConnected || false
+                };
+            });
         });
-        return toolsByServer;
+        return providers;
     }
-    async cleanup() {
-        const cleanupPromises = Array.from(this.servers.values()).map(async (config) => {
-            if (config.isConnected) {
+    // Get a specific account for a user and provider
+    getUserAccount(userId, provider, accountId) {
+        const userCreds = this.userCredentials.get(userId);
+        const account = userCreds?.providers[provider]?.[accountId];
+        if (!account)
+            return null;
+        const accountKey = `${userId}:${accountId}`;
+        return {
+            ...account,
+            connected: this.serverPools.get(provider)?.get(accountKey)?.isConnected || false
+        };
+    }
+    // List all accounts for a specific provider across all users (for admin purposes)
+    getProviderAccounts(provider) {
+        const accounts = [];
+        this.userCredentials.forEach((userCreds, userId) => {
+            const providerAccounts = userCreds.providers[provider];
+            if (providerAccounts) {
+                Object.entries(providerAccounts).forEach(([accountId, creds]) => {
+                    const accountKey = `${userId}:${accountId}`;
+                    accounts.push({
+                        userId,
+                        accountId,
+                        displayName: creds.displayName,
+                        accountType: creds.accountType,
+                        email: creds.email,
+                        username: creds.username,
+                        connected: this.serverPools.get(provider)?.get(accountKey)?.isConnected || false
+                    });
+                });
+            }
+        });
+        return accounts;
+    }
+    // Get all available providers (from config)
+    getAvailableProviders() {
+        const providers = {};
+        this.providerConfigs.forEach((config, name) => {
+            providers[name] = {
+                name: config.name,
+                toolPrefix: config.toolPrefix,
+                isShared: config.isShared || false
+            };
+        });
+        return providers;
+    }
+    // Remove provider credentials for a user (specific account or all accounts)
+    async removeUserProvider(userId, providerName, accountId) {
+        const userCreds = this.userCredentials.get(userId);
+        if (!userCreds?.providers[providerName]) {
+            return false;
+        }
+        const providerPool = this.serverPools.get(providerName);
+        if (accountId) {
+            // Remove specific account
+            if (!userCreds.providers[providerName][accountId]) {
+                return false;
+            }
+            // Disconnect server first
+            const accountKey = `${userId}:${accountId}`;
+            const userServer = providerPool?.get(accountKey);
+            if (userServer?.isConnected) {
                 try {
-                    await config.client.close();
-                    config.isConnected = false;
+                    await userServer.client.close();
+                    providerPool?.delete(accountKey);
                 }
                 catch (error) {
-                    console.error(`Error closing ${config.name}:`, error);
+                    console.error(`Error disconnecting ${providerName}:${accountId} for user ${userId}:`, error);
                 }
             }
+            // Remove credentials
+            delete userCreds.providers[providerName][accountId];
+            // If no more accounts for this provider, remove provider entirely
+            if (Object.keys(userCreds.providers[providerName]).length === 0) {
+                delete userCreds.providers[providerName];
+            }
+            console.log(`🗑️ Removed ${providerName}:${accountId} for user ${userId}`);
+        }
+        else {
+            // Remove all accounts for this provider
+            const accounts = Object.keys(userCreds.providers[providerName]);
+            // Disconnect all servers
+            for (const account of accounts) {
+                const accountKey = `${userId}:${account}`;
+                const userServer = providerPool?.get(accountKey);
+                if (userServer?.isConnected) {
+                    try {
+                        await userServer.client.close();
+                        providerPool?.delete(accountKey);
+                    }
+                    catch (error) {
+                        console.error(`Error disconnecting ${providerName}:${account} for user ${userId}:`, error);
+                    }
+                }
+            }
+            // Remove all credentials
+            delete userCreds.providers[providerName];
+            console.log(`🗑️ Removed all ${providerName} accounts for user ${userId}`);
+        }
+        // Clean up user if no providers left
+        if (Object.keys(userCreds.providers).length === 0) {
+            this.userCredentials.delete(userId);
+        }
+        else {
+            this.userCredentials.set(userId, userCreds);
+        }
+        await this.saveCredentials();
+        await this.updateToolsList();
+        return true;
+    }
+    // Clear all sessions for a user
+    async clearUserSessions(userId) {
+        let cleared = 0;
+        for (const [sessionId, session] of this.sessions) {
+            if (session.userId === userId) {
+                this.sessions.delete(sessionId);
+                cleared++;
+            }
+        }
+        if (cleared > 0) {
+            await this.saveSessions();
+        }
+        return cleared;
+    }
+    // Get sessions for a user
+    getUserSessions(userId) {
+        const userSessions = [];
+        this.sessions.forEach((session) => {
+            if (session.userId === userId) {
+                userSessions.push(session);
+            }
+        });
+        return userSessions.sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime());
+    }
+    // Legacy methods for backward compatibility
+    async getAllSessions() {
+        const allSessions = {};
+        this.sessions.forEach((session, sessionId) => {
+            allSessions[sessionId] = session.messages;
+        });
+        return allSessions;
+    }
+    async getSession(sessionId) {
+        const session = this.sessions.get(sessionId);
+        return session ? session.messages : null;
+    }
+    async deleteSession(sessionId) {
+        const deleted = this.sessions.delete(sessionId);
+        if (deleted) {
+            await this.saveSessions();
+        }
+        return deleted;
+    }
+    async clearAllSessions() {
+        this.sessions.clear();
+        await this.saveSessions();
+    }
+    async getSessionsSummary() {
+        const summaries = [];
+        this.sessions.forEach((session, sessionId) => {
+            const lastUserMessage = session.messages
+                .filter(m => m.role === 'user')
+                .pop();
+            summaries.push({
+                sessionId,
+                userId: session.userId,
+                messageCount: session.messages.length,
+                lastMessage: lastUserMessage
+                    ? (typeof lastUserMessage.content === 'string' ? lastUserMessage.content : 'Complex message')
+                    : undefined,
+                timestamp: session.lastActivity.toISOString()
+            });
+        });
+        return summaries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    }
+    getToolsByServer() {
+        const toolsByProvider = {};
+        this.toolToServerMap.forEach((mapping, toolName) => {
+            const key = mapping.accountKey ? `${mapping.provider}:${mapping.accountKey}` : mapping.provider;
+            if (!toolsByProvider[key]) {
+                toolsByProvider[key] = [];
+            }
+            toolsByProvider[key].push(toolName);
+        });
+        return toolsByProvider;
+    }
+    async cleanup() {
+        await this.saveSessions();
+        const cleanupPromises = [];
+        this.serverPools.forEach((providerPool) => {
+            providerPool.forEach((config) => {
+                if (config.isConnected) {
+                    cleanupPromises.push(config.client.close().catch(error => console.error(`Error closing ${config.name}:`, error)));
+                }
+            });
         });
         await Promise.allSettled(cleanupPromises);
         console.log("🧹 All MCP clients cleaned up");
@@ -751,303 +1092,376 @@ async function main() {
     // Middleware
     app.use(cors());
     app.use(express.json());
-    const mcpClient = new MCPClient();
+    // Initialize extensible MCP client
+    const mcpClient = new ExtensibleMCPClient();
     try {
         await mcpClient.connectToServer();
         console.log("Server status:", mcpClient.getServerStatus());
-        // Health check endpoint
-        const healthCheck = (req, res) => {
-            res.json({ status: 'ok', tools: mcpClient.tools.map(t => t.name) });
-        };
-        const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
-        if (!slackSigningSecret) {
-            throw new Error("SLACK_SIGNING_SECRET is not set");
-        }
-        const slackEvents = createEventAdapter(slackSigningSecret, {
-            includeBody: true,
+        // =============================================================================
+        // HEALTH & STATUS ENDPOINTS
+        // =============================================================================
+        app.get('/health', (req, res) => {
+            res.json({
+                status: 'ok',
+                tools: mcpClient.tools.length,
+                serverStatus: mcpClient.getServerStatus(),
+                availableProviders: mcpClient.getAvailableProviders()
+            });
         });
-        const scopes = [
-            'app_mentions:read',
-            'channels:read',
-            'groups:read',
-            'channels:manage',
-            'chat:write',
-            'incoming-webhook',
-        ];
-        const userScopes = ['chat:write'];
-        const slackClientId = process.env.SLACK_CLIENT_ID;
-        const slackClientSecret = process.env.SLACK_CLIENT_SECRET;
-        const slackStateSecret = process.env.SLACK_STATE_SECRET;
-        if (!slackClientId) {
-            throw new Error("SLACK_CLIENT_ID is not set");
-        }
-        if (!slackClientSecret) {
-            throw new Error("SLACK_CLIENT_SECRET is not set");
-        }
-        if (!slackStateSecret) {
-            throw new Error("SLACK_STATE_SECRET is not set");
-        }
-        const installer = new InstallProvider({
-            clientId: slackClientId,
-            clientSecret: slackClientSecret,
-            authVersion: 'v2',
-            stateSecret: "slackStateSecret",
-            stateStore: {
-                async generateStateParam(installOptions, now) {
-                    console.log({ installOptions });
-                    return await `state-${now}-${Math.random().toString(36).substring(2, 15)}`;
-                },
-                async verifyStateParam(now, state) {
-                    console.log({ state });
-                    const parts = state.split('-');
-                    if (parts.length < 3 || parts[0] !== 'state') {
-                        throw new Error('Invalid state parameter');
-                    }
-                    const timestamp = parseInt(parts[1], 10);
-                    if (isNaN(timestamp) || now.getTime() - timestamp > 10 * 60 * 1000) { // 10 minutes
-                        throw new Error('State parameter expired');
-                    }
-                    return {
-                        scopes,
-                        userScopes,
-                        redirectUri: '/auth/slack/callback',
-                        isEnterpriseInstall: false,
-                        // Optionally add teamId, metadata, etc. if needed
-                    };
-                },
-            },
-            installationStore: {
-                storeInstallation: async (installation) => {
-                    console.log({ installation });
-                },
-                fetchInstallation: async (installQuery, logger) => {
-                    return {
-                        team: {
-                            id: "dummy-team-id",
-                            name: "Dummy Team"
-                        },
-                        enterprise: installQuery.isEnterpriseInstall
-                            ? {
-                                id: "dummy-enterprise-id",
-                                name: "Dummy Enterprise"
-                            }
-                            : undefined,
-                        isEnterpriseInstall: false,
-                        user: {
-                            id: "dummy-user-id",
-                            token: "dummy-user-token",
-                            refreshToken: "dummy-refresh-token",
-                            expiresAt: Date.now() + 3600 * 1000, // 1 hour from now
-                            scopes: ["chat:write"],
-                        },
-                        tokenType: "bot",
-                        appId: "dummy-app-id",
-                        authVersion: "v2",
-                        bot: {
-                            scopes: ["chat:write"],
-                            token: "dummy-bot-token",
-                            refreshToken: "dummy-bot-refresh-token",
-                            expiresAt: Date.now() + 3600 * 1000, // 1 hour from now
-                            id: "dummy-bot-id",
-                            userId: "dummy-bot-user-id"
+        app.get('/providers', (req, res) => {
+            res.json(mcpClient.getAvailableProviders());
+        });
+        // Get all accounts for a specific provider (admin endpoint)
+        app.get('/providers/:provider/accounts', (req, res) => {
+            const { provider } = req.params;
+            const accounts = mcpClient.getProviderAccounts(provider);
+            res.json({ provider, accounts });
+        });
+        // =============================================================================
+        // USER MANAGEMENT ENDPOINTS
+        // =============================================================================
+        // Get user's connected providers
+        app.get('/users/:userId/providers', (req, res) => {
+            const { userId } = req.params;
+            const providers = mcpClient.getUserProviders(userId);
+            res.json({ userId, providers });
+        });
+        // Set credentials for a user and provider
+        app.post('/users/:userId/providers/:provider', async (req, res) => {
+            const { userId, provider } = req.params;
+            const credentials = req.body;
+            try {
+                const result = await mcpClient.setUserCredentials(userId, provider, credentials);
+                res.json({
+                    success: true,
+                    accountId: result.accountId,
+                    isNew: result.isNew,
+                    message: `${provider} account ${result.isNew ? 'added' : 'updated'} for user ${userId}`,
+                    providers: mcpClient.getUserProviders(userId)
+                });
+            }
+            catch (error) {
+                res.status(500).json({
+                    error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error),
+                    provider,
+                    userId
+                });
+            }
+        });
+        // Get specific account details
+        app.get('/users/:userId/providers/:provider/:accountId', (req, res) => {
+            const { userId, provider, accountId } = req.params;
+            const account = mcpClient.getUserAccount(userId, provider, accountId);
+            if (account) {
+                res.json({ userId, provider, accountId, account });
+            }
+            else {
+                res.status(404).json({
+                    error: `Account ${accountId} not found for ${provider} provider and user ${userId}`
+                });
+            }
+        });
+        // Remove specific account for a user and provider
+        app.delete('/users/:userId/providers/:provider/:accountId', async (req, res) => {
+            const { userId, provider, accountId } = req.params;
+            try {
+                const success = await mcpClient.removeUserProvider(userId, provider, accountId);
+                if (success) {
+                    res.json({
+                        success: true,
+                        message: `${provider} account ${accountId} removed for user ${userId}`,
+                        providers: mcpClient.getUserProviders(userId)
+                    });
+                }
+                else {
+                    res.status(404).json({
+                        error: `${provider} account ${accountId} not found for user ${userId}`
+                    });
+                }
+            }
+            catch (error) {
+                res.status(500).json({ error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error) });
+            }
+        });
+        // Remove all accounts for a provider for a user
+        app.delete('/users/:userId/providers/:provider', async (req, res) => {
+            const { userId, provider } = req.params;
+            try {
+                const success = await mcpClient.removeUserProvider(userId, provider);
+                if (success) {
+                    res.json({
+                        success: true,
+                        message: `All ${provider} accounts removed for user ${userId}`,
+                        providers: mcpClient.getUserProviders(userId)
+                    });
+                }
+                else {
+                    res.status(404).json({
+                        error: `${provider} not found for user ${userId}`
+                    });
+                }
+            }
+            catch (error) {
+                res.status(500).json({ error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error) });
+            }
+        });
+        // Get user's sessions
+        app.get('/users/:userId/sessions', (req, res) => {
+            const { userId } = req.params;
+            const sessions = mcpClient.getUserSessions(userId);
+            res.json({ userId, sessions });
+        });
+        // Clear all sessions for a user
+        app.delete('/users/:userId/sessions', async (req, res) => {
+            const { userId } = req.params;
+            const cleared = await mcpClient.clearUserSessions(userId);
+            res.json({ userId, sessionsCleared: cleared });
+        });
+        // =============================================================================
+        // OAUTH CALLBACK ENDPOINTS - Now provider-agnostic!
+        // =============================================================================
+        // OAuth callback endpoints with separate routes for userId
+        app.get('/auth/:provider/callback/', async (req, res) => {
+            const { provider } = req.params;
+            let { code, userId } = req.query;
+            if (!userId || typeof userId !== 'string') {
+                userId = 'default'; // Default userId if not provided
+            }
+            if (!code || typeof code !== 'string') {
+                res.status(400).json({ error: 'Authorization code is required' });
+                return;
+            }
+            console.log(`${provider} authorization code received for user ${userId}:`, code);
+            try {
+                let credentials = {};
+                let displayName = '';
+                // Handle different provider token exchanges
+                switch (provider) {
+                    case 'google':
+                        const { tokens } = await auth.getToken(code);
+                        auth.setCredentials(tokens);
+                        const oauth2 = google.oauth2({ version: 'v2', auth });
+                        const profile = await oauth2.userinfo.get();
+                        credentials = {
+                            refreshToken: tokens.refresh_token ?? undefined,
+                            accessToken: tokens.access_token ?? undefined,
+                            email: profile.data.email ?? undefined,
+                            displayName: profile.data.name ?? undefined,
+                            accountType: profile.data.email?.includes('@gmail.com') ? 'personal' : 'work',
+                            expiresAt: tokens.expiry_date ?? undefined
+                        };
+                        displayName = profile.data.name || profile.data.email || 'Google Account';
+                        break;
+                    case 'twitter':
+                        const twitterData = await twitterService.getToken(code);
+                        credentials = {
+                            accessToken: twitterData.access_token,
+                            refreshToken: twitterData.refresh_token,
+                            username: twitterData.username,
+                            displayName: twitterData.username ? `@${twitterData.username}` : 'Twitter Account',
+                            accountType: 'personal'
+                        };
+                        displayName = credentials.displayName ?? 'Twitter Account';
+                        break;
+                    case 'notion':
+                        const encoded = Buffer.from(`${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`).toString("base64");
+                        const notionResponse = await fetch('https://api.notion.com/v1/oauth/token', {
+                            method: 'POST',
+                            headers: {
+                                Accept: "application/json",
+                                "Content-Type": "application/json",
+                                'Authorization': `Basic ${encoded}`,
+                            },
+                            body: JSON.stringify({
+                                grant_type: 'authorization_code',
+                                code: code,
+                                redirect_uri: process.env.NOTION_REDIRECT_URI,
+                            }),
+                        });
+                        const notionData = await notionResponse.json();
+                        if (notionData.error) {
+                            throw new Error(notionData.error);
                         }
-                    };
-                },
-                deleteInstallation: async (installQuery) => { },
-            },
-            logLevel: LogLevel.DEBUG,
-        });
-        app.get('/health', healthCheck);
-        app.get('/auth/google/callback', async (req, res) => {
-            const { code } = req.query;
-            if (!code || typeof code !== 'string') {
-                res.status(400).json({ error: 'Authorization code is required' });
-                return;
-            }
-            console.log('Authorization code received:', code);
-            const { tokens } = await auth.getToken(code);
-            console.log({ refresh: tokens.refresh_token });
-            // Update .env file with the refresh token
-            const envPath = path.resolve(process.cwd(), '.env');
-            let envContent = fs.readFileSync(envPath, 'utf8');
-            if (envContent.includes('GOOGLE_REFRESH_TOKEN=')) {
-                // Replace existing refresh token
-                envContent = envContent.replace(/GOOGLE_REFRESH_TOKEN=.*(\r?\n|$)/, `GOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'$1`);
-            }
-            else {
-                // Add refresh token
-                envContent += `\nGOOGLE_REFRESH_TOKEN='${tokens.refresh_token}'\n`;
-            }
-            // Write updated content back to .env file
-            fs.writeFileSync(envPath, envContent);
-            res.status(200).json({ message: 'Authorization successful. Refresh token saved.' });
-        });
-        app.get('/auth/slack/callback', async (req, res) => {
-            await installer.handleCallback(req, res);
-            const result = await installer.authorize({ teamId: 'my-team-ID', isEnterpriseInstall: false, userId: 'my-user-ID', enterpriseId: 'my-enterprise-ID' });
-            console.log({ result });
-        });
-        app.get('/auth/notion/callback', async (req, res) => {
-            const { code } = req.query;
-            if (!code || typeof code !== 'string') {
-                res.status(400).json({ error: 'Authorization code is required' });
-                return;
-            }
-            console.log('Authorization code received:', code);
-            const encoded = Buffer.from(`${process.env.NOTION_CLIENT_ID}:${process.env.NOTION_CLIENT_SECRET}`).toString("base64");
-            console.log('Encoded credentials:', encoded);
-            // Fetch Notion access token
-            if (!process.env.NOTION_CLIENT_ID || !process.env.NOTION_CLIENT_SECRET) {
-                res.status(500).json({ error: 'Notion client ID and secret are not set' });
-                return;
-            }
-            fetch('https://api.notion.com/v1/oauth/token', {
-                method: 'POST',
-                headers: {
-                    Accept: "application/json",
-                    "Content-Type": "application/json",
-                    'Authorization': `Basic ${encoded}`,
-                },
-                body: JSON.stringify({
-                    grant_type: 'authorization_code',
-                    code: code,
-                    redirect_uri: process.env.NOTION_REDIRECT_URI,
-                }),
-            })
-                .then(response => response.json())
-                .then(data => {
-                if (data.error) {
-                    console.error('Error fetching Notion token:', data.error);
-                    res.status(500).json({ error: 'Failed to fetch Notion token' });
+                        credentials = {
+                            accessToken: notionData.access_token,
+                            workspaceId: notionData.workspace_id,
+                            displayName: notionData.workspace_name || 'Notion Workspace'
+                        };
+                        displayName = credentials.displayName ?? 'Notion Workspace';
+                        break;
+                    case 'github':
+                        const githubResponse = await axios.post('https://github.com/login/oauth/access_token', null, {
+                            params: {
+                                client_id: process.env.GITHUB_CLIENT_ID,
+                                client_secret: process.env.GITHUB_CLIENT_SECRET,
+                                code,
+                                redirect_uri: process.env.GITHUB_REDIRECT_URI,
+                            },
+                            headers: { Accept: 'application/json' },
+                        });
+                        const githubData = githubResponse.data;
+                        if (githubData.error) {
+                            throw new Error(githubData.error);
+                        }
+                        credentials = {
+                            accessToken: githubData.access_token,
+                            displayName: 'GitHub Account'
+                        };
+                        displayName = credentials.displayName ?? 'GitHub Account';
+                        break;
+                    case 'slack':
+                        // Handle Slack OAuth (if you implement it)
+                        throw new Error('Slack OAuth not implemented in this example');
+                    default:
+                        throw new Error(`Unknown provider: ${provider}`);
                 }
-                else {
-                    console.log('Notion token received:', data);
-                    // Update .env file with the access token
-                    const envPath = path.resolve(process.cwd(), '.env');
-                    let envContent = fs.readFileSync(envPath, 'utf8');
-                    if (envContent.includes('NOTION_ACCESS_TOKEN=')) {
-                        // Replace existing access token
-                        envContent = envContent.replace(/NOTION_ACCESS_TOKEN=.*(\r?\n|$)/, `NOTION_ACCESS_TOKEN='${data.access_token}'$1`);
-                    }
-                    else {
-                        // Add access token
-                        envContent += `\nNOTION_ACCESS_TOKEN=${data.access_token}\n`;
-                    }
-                    // Write updated content back to .env file
-                    fs.writeFileSync(envPath, envContent);
-                    res.status(200).json({ message: 'Authorization successful. Access token saved.' });
-                }
-            })
-                .catch(error => {
-                console.error('Error during Notion token fetch:', error);
-                res.status(500).json({ error: 'Failed to fetch Notion token' });
-            });
+                // Store credentials using the extensible system
+                const result = await mcpClient.setUserCredentials(userId, provider, credentials);
+                res.status(200).json({
+                    message: `${provider} authorization successful for user ${userId}`,
+                    provider,
+                    userId,
+                    accountId: result.accountId,
+                    isNew: result.isNew,
+                    displayName,
+                    providers: mcpClient.getUserProviders(userId)
+                });
+            }
+            catch (error) {
+                console.error(`Error during ${provider} token exchange:`, error);
+                res.status(500).json({
+                    error: `Failed to complete ${provider} authorization`,
+                    details: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error)
+                });
+            }
         });
-        app.get('/auth/github/callback', async (req, res) => {
-            const { code } = req.query;
-            if (!code || typeof code !== 'string') {
-                res.status(400).json({ error: 'Authorization code is required' });
-                return;
-            }
-            console.log('Authorization code received:', code);
-            // Fetch Github access token
-            if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
-                res.status(500).json({ error: 'Github client ID and secret are not set' });
-                return;
-            }
-            axios.post('https://github.com/login/oauth/access_token', null, {
-                params: {
-                    client_id: process.env.GITHUB_CLIENT_ID,
-                    client_secret: process.env.GITHUB_CLIENT_SECRET,
-                    code,
-                    redirect_uri: process.env.GITHUB_REDIRECT_URI,
-                },
-                headers: {
-                    Accept: 'application/json',
-                },
-            })
-                .then(response => response.data)
-                .then(data => {
-                if (data.error) {
-                    console.error('Error fetching Github token:', data.error);
-                    res.status(500).json({ error: 'Failed to fetch Github token' });
-                }
-                else {
-                    console.log('Github token received:', data);
-                    // Update .env file with the access token
-                    const envPath = path.resolve(process.cwd(), '.env');
-                    let envContent = fs.readFileSync(envPath, 'utf8');
-                    if (envContent.includes('GITHUB_ACCESS_TOKEN=')) {
-                        // Replace existing access token
-                        envContent = envContent.replace(/GITHUB_ACCESS_TOKEN=.*(\r?\n|$)/, `GITHUB_ACCESS_TOKEN='${data.access_token}'$1`);
-                    }
-                    else {
-                        // Add access token
-                        envContent += `\nGITHUB_ACCESS_TOKEN=${data.access_token}\n`;
-                    }
-                    // Write updated content back to .env file
-                    fs.writeFileSync(envPath, envContent);
-                    res.status(200).json({ message: 'Authorization successful. Access token saved.' });
-                }
-            })
-                .catch(error => {
-                console.error('Error during Github token fetch:', error);
-                res.status(500).json({ error: 'Failed to fetch Github token' });
-            });
-        });
-        app.get('/auth/twitter/callback', async (req, res) => {
-            const { code } = req.query;
-            if (!code || typeof code !== 'string') {
-                res.status(400).json({ error: 'Authorization code is required' });
-                return;
-            }
-            console.log('Authorization code received:', code);
-            const data = await twitterService.getToken(code);
-            console.log('twitter token received:', data);
-            // Update .env file with the access token
-            const envPath = path.resolve(process.cwd(), '.env');
-            let envContent = fs.readFileSync(envPath, 'utf8');
-            if (envContent.includes('TWITTER_ACCESS_TOKEN=')) {
-                // Replace existing access token
-                envContent = envContent.replace(/TWITTER_ACCESS_TOKEN=.*(\r?\n|$)/, `TWITTER_ACCESS_TOKEN='${data.access_token}'$1`);
-            }
-            else {
-                // Add access token
-                envContent += `\nTWITTER_ACCESS_TOKEN=${data.access_token}\n`;
-            }
-            // Write updated content back to .env file
-            fs.writeFileSync(envPath, envContent);
-            res.status(200).json({ message: 'Authorization successful. Access token saved.' });
+        // OAuth callback without userId (defaults to 'default')
+        // app.get('/auth/:provider/callback', async (req, res) => {
+        //     (req.params as Record<string, any>).userId = 'default';
+        //     // Reuse the same handler
+        //     return app._router.handle(req, res);
+        // });
+        // =============================================================================
+        // OAUTH INITIATION ENDPOINTS
+        // =============================================================================
+        // OAuth initiation endpoints with separate routes
+        app.get('/auth/google/user/:userId', (req, res) => {
+            const { userId } = req.params;
+            const authUrl = getAuthUrl();
+            // Modify redirect URI to include userId
+            const urlWithUser = authUrl.replace('callback', `callback&state=${userId}`);
+            res.json({ authUrl: urlWithUser, userId });
         });
         app.get('/auth/google', (req, res) => {
-            const authUrl = showAuthUrl();
-            res.json({ authUrl });
+            const authUrl = getAuthUrl();
+            res.json({ authUrl, userId: 'default' });
+        });
+        app.get('/auth/notion/user/:userId', (req, res) => {
+            const { userId } = req.params;
+            const redirectUri = `${process.env.NOTION_REDIRECT_URI}&state=${userId}`;
+            const authUrl = `https://api.notion.com/v1/oauth/authorize?client_id=${process.env.NOTION_CLIENT_ID}&response_type=code&owner=user&redirect_uri=${redirectUri}`;
+            res.json({ authUrl, userId });
         });
         app.get('/auth/notion', (req, res) => {
-            res.json({ url: `https://api.notion.com/v1/oauth/authorize?client_id=${process.env.NOTION_CLIENT_ID}&response_type=code&owner=user&redirect_uri=${process.env.NOTION_REDIRECT_URI}` });
+            const authUrl = `https://api.notion.com/v1/oauth/authorize?client_id=${process.env.NOTION_CLIENT_ID}&response_type=code&owner=user&redirect_uri=${process.env.NOTION_REDIRECT_URI}`;
+            res.json({ authUrl, userId: 'default' });
         });
-        app.get('/auth/slack', async (req, res) => {
-            await installer.handleInstallPath(req, res, {}, {
-                scopes,
-                userScopes,
-            });
+        app.get('/auth/github/user/:userId', (req, res) => {
+            const { userId } = req.params;
+            const redirectUri = `${process.env.GITHUB_REDIRECT_URI}/${userId}`;
+            const authUrl = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=user&state=${userId}`;
+            res.json({ authUrl, userId });
         });
-        app.get('/auth/github', async (req, res) => {
-            res.json({ url: `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GITHUB_REDIRECT_URI}&scope=user` });
+        app.get('/auth/github', (req, res) => {
+            const authUrl = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GITHUB_REDIRECT_URI}&scope=user`;
+            res.json({ authUrl, userId: 'default' });
+        });
+        app.get('/auth/twitter/user/:userId', async (req, res) => {
+            const { userId } = req.params;
+            const scopes = ["tweet.read", "tweet.write", "users.read"];
+            const authUrl = await twitterService.getAuthUrl(scopes, { state: userId });
+            res.json({ authUrl, userId });
         });
         app.get('/auth/twitter', async (req, res) => {
             const scopes = ["tweet.read", "tweet.write", "users.read"];
-            const url = await twitterService.getAuthUrl(scopes, {});
-            res.json({ url });
+            const authUrl = await twitterService.getAuthUrl(scopes, { state: 'default' });
+            res.json({ authUrl, userId: 'default' });
         });
-        // Original HTTP chat endpoint (unchanged)
-        const chatHandler = async (req, res) => {
+        // =============================================================================
+        // CHAT ENDPOINTS - Enhanced with user context
+        // =============================================================================
+        // Chat endpoint with user context
+        app.post('/chat/:userId', async (req, res) => {
+            const { userId } = req.params;
+            const { query, sessionId } = req.body;
+            if (!query) {
+                res.status(400).json({ error: 'Query is required' });
+                return;
+            }
             try {
-                const { query, sessionId } = req.body;
-                if (!query) {
-                    res.status(400).json({ error: 'Query is required' });
-                    return;
-                }
+                const result = await mcpClient.processQueryWithUser(query, userId, sessionId);
+                // Get the response from the session
+                const session = await mcpClient.getSession(result.sessionId);
+                const lastMessage = session?.[session.length - 1];
+                const response = lastMessage?.role === 'assistant' && Array.isArray(lastMessage.content)
+                    ? lastMessage.content.find(c => c.type === 'text')?.text || 'Response completed'
+                    : 'Response completed';
+                res.json({
+                    response,
+                    sessionId: result.sessionId,
+                    userId,
+                    providers: mcpClient.getUserProviders(userId)
+                });
+            }
+            catch (error) {
+                console.error('Error processing query:', error);
+                res.status(500).json({ error: 'Failed to process query' });
+            }
+        });
+        // SSE Chat endpoint with user context
+        app.post('/chat/:userId/stream', async (req, res) => {
+            const { userId } = req.params;
+            const { query, sessionId } = req.body;
+            if (!query) {
+                res.status(400).json({ error: 'Query is required' });
+                return;
+            }
+            // Set up SSE
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Cache-Control, Content-Type',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+            });
+            const sendEvent = (event) => {
+                res.write(`data: ${JSON.stringify(event)}\n\n`);
+            };
+            try {
+                await mcpClient.processQueryWithUser(query, userId, sessionId, sendEvent);
+            }
+            catch (error) {
+                console.error('Error in SSE stream:', error);
+                sendEvent({
+                    type: 'error',
+                    data: {
+                        message: 'I apologize, but I encountered an error while processing your request.',
+                        error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error)
+                    },
+                    sessionId
+                });
+            }
+            res.end();
+        });
+        // Legacy endpoints for backward compatibility
+        app.post('/chat', async (req, res) => {
+            const { query, sessionId } = req.body;
+            if (!query) {
+                res.status(400).json({ error: 'Query is required' });
+                return;
+            }
+            try {
                 const response = await mcpClient.processQuery(query, sessionId);
                 res.json(response);
             }
@@ -1055,77 +1469,91 @@ async function main() {
                 console.error('Error processing query:', error);
                 res.status(500).json({ error: 'Failed to process query' });
             }
-        };
-        // NEW: SSE Chat Stream endpoint
-        const sseStreamHandler = async (req, res) => {
+        });
+        app.post('/chat/stream', async (req, res) => {
+            const { query, sessionId } = req.body;
+            if (!query) {
+                res.status(400).json({ error: 'Query is required' });
+                return;
+            }
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*'
+            });
+            const sendEvent = (event) => {
+                res.write(`data: ${JSON.stringify(event)}\n\n`);
+            };
             try {
-                const { query, sessionId } = req.body;
-                if (!query) {
-                    res.status(400).json({ error: 'Query is required' });
-                    return;
-                }
-                // Set up SSE headers
-                res.writeHead(200, {
-                    'Content-Type': 'text/event-stream',
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Cache-Control, Content-Type',
-                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-                });
-                // Function to send SSE events
-                const sendEvent = (event) => {
-                    const sseData = `data: ${JSON.stringify(event)}\n\n`;
-                    res.write(sseData);
-                };
-                // // Send initial connection event
-                // sendEvent({
-                //     type: 'thinking',
-                //     data: { message: 'Laura is preparing to assist you...' },
-                //     sessionId
-                // });
-                // Process the query with SSE
                 await mcpClient.processQuerySSE(query, sessionId, sendEvent);
-                // Close the connection gracefully
-                res.end();
             }
             catch (error) {
-                console.error('Error in SSE stream:', error);
-                try {
-                    const errorEvent = {
-                        type: 'error',
-                        data: {
-                            message: 'I apologize, but I encountered an error while processing your request.',
-                            error: error instanceof Error ? error.message : 'Unknown error'
-                        }
-                    };
-                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
-                }
-                catch (writeError) {
-                    console.error('Error writing error event:', writeError);
-                }
-                res.end();
+                sendEvent({
+                    type: 'error',
+                    data: { error: typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error) },
+                    sessionId
+                });
             }
-        };
-        // Register endpoints
-        app.post('/chat', chatHandler); // Original HTTP endpoint
-        app.post('/chat/stream', sseStreamHandler); // New SSE endpoint
-        // Handle preflight requests for CORS
+            res.end();
+        });
+        // =============================================================================
+        // SESSION MANAGEMENT ENDPOINTS
+        // =============================================================================
+        app.get('/sessions', async (req, res) => {
+            const summary = await mcpClient.getSessionsSummary();
+            res.json(summary);
+        });
+        app.get('/sessions/:sessionId', async (req, res) => {
+            const { sessionId } = req.params;
+            const session = await mcpClient.getSession(sessionId);
+            if (session) {
+                res.json({ sessionId, messages: session });
+            }
+            else {
+                res.status(404).json({ error: 'Session not found' });
+            }
+        });
+        app.delete('/sessions/:sessionId', async (req, res) => {
+            const { sessionId } = req.params;
+            const deleted = await mcpClient.deleteSession(sessionId);
+            res.json({ deleted, sessionId });
+        });
+        // =============================================================================
+        // CORS PREFLIGHT
+        // =============================================================================
+        app.options('/chat/:userId/stream', (req, res) => {
+            res.header('Access-Control-Allow-Origin', '*');
+            res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            res.header('Access-Control-Allow-Headers', 'Cache-Control, Content-Type');
+            res.sendStatus(200);
+        });
         app.options('/chat/stream', (req, res) => {
             res.header('Access-Control-Allow-Origin', '*');
             res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
             res.header('Access-Control-Allow-Headers', 'Cache-Control, Content-Type');
             res.sendStatus(200);
         });
+        // =============================================================================
+        // START SERVER
+        // =============================================================================
         app.listen(port, () => {
-            console.log(`Server running on port ${port}`);
-            console.log(`Health check: http://localhost:${port}/health`);
-            console.log(`Chat endpoint: http://localhost:${port}/chat`);
-            console.log(`SSE Chat endpoint: http://localhost:${port}/chat/stream`);
+            console.log(`🚀 Server running on port ${port}`);
+            console.log(`📊 Health check: http://localhost:${port}/health`);
+            console.log(`👥 User chat: http://localhost:${port}/chat/:userId`);
+            console.log(`📡 User SSE chat: http://localhost:${port}/chat/:userId/stream`);
+            console.log(`🔗 Legacy chat: http://localhost:${port}/chat`);
+            console.log(`📋 Available providers: http://localhost:${port}/providers`);
+            mcpClient.logServerStatus();
         });
         // Handle graceful shutdown
         process.on('SIGTERM', async () => {
             console.log('SIGTERM received. Shutting down gracefully...');
+            await mcpClient.cleanup();
+            process.exit(0);
+        });
+        process.on('SIGINT', async () => {
+            console.log('SIGINT received. Shutting down gracefully...');
             await mcpClient.cleanup();
             process.exit(0);
         });
@@ -1135,4 +1563,40 @@ async function main() {
         process.exit(1);
     }
 }
+// Usage examples for testing:
+/*
+1. Add credentials for a user:
+POST /users/john/providers/google
+{
+  "refreshToken": "your-refresh-token",
+  "email": "john@company.com",
+  "displayName": "John's Work Gmail",
+  "accountType": "work"
+}
+
+2. Start a chat session:
+POST /chat/john
+{
+  "query": "Check my work email",
+  "sessionId": "optional-session-id"
+}
+
+3. Add a new provider easily:
+mcpClient.addProvider('custom-service', {
+  name: 'custom-service',
+  serverConfig: {
+    serverScriptPath: "./build/servers/custom.js"
+  },
+  toolPrefix: 'custom:',
+  envMapping: (creds) => ({
+    "CUSTOM_API_KEY": creds.apiKey
+  })
+});
+
+4. Stream chat with user context:
+POST /chat/john/stream
+{
+  "query": "Send a tweet from my personal account"
+}
+*/
 main();
